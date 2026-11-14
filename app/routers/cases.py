@@ -11,6 +11,7 @@ from app.agents.strategy_agent import generate_case_strategy
 from app.config import settings
 from app.core.case_router import route_case
 from app.core.dependencies import get_current_user
+from app.core.uploads import MAX_UPLOAD_BYTES, validate_upload
 from app.core.exceptions import CaseNotFound, ContentSafetyViolation, UnauthorizedAccess
 from app.models.case import CaseStatus, DisputeSubmission
 from app.services.blob_service import blob_service, refresh_case_urls
@@ -336,18 +337,10 @@ async def upload_evidence(
     if case["claimant_email"].lower() != current_user["email"].lower():
         raise UnauthorizedAccess()
 
-    allowed = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx", ".txt"}
-    original_name = file.filename or "evidence.bin"
-    ext = os.path.splitext(original_name)[1].lower()
-    if ext and ext not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported evidence file type.")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    original_name, content_type = validate_upload(file.filename, content)
 
     blob_name    = f"{case_id}/{uuid.uuid4().hex}_{original_name}"
-    content_type = file.content_type or "application/octet-stream"
     blob_service.upload("evidence", blob_name, content, content_type=content_type)
     download_url = blob_service.generate_download_url("evidence", blob_name, expiry_hours=720)
 

@@ -10,6 +10,7 @@ from app.core.background import in_thread
 from app.config import settings
 from app.core.exceptions import CaseNotFound
 from app.core.security import verify_respondent_token
+from app.core.uploads import MAX_UPLOAD_BYTES, validate_upload
 from app.models.case import CaseStatus
 from app.models.negotiation import ProofResponseRequest, ProposalDecision, ProposalResponseRequest
 from app.services.blob_service import blob_service
@@ -397,21 +398,17 @@ async def respondent_evidence_upload(body: RespondentEvidenceUpload):
     import base64
     case = _verify_respondent(body.case_id, body.email, body.token)
 
-    allowed = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx", ".txt"}
-    original_name = body.filename or "respondent_evidence.bin"
-    ext = os.path.splitext(original_name)[1].lower()
-    if ext and ext not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported evidence file type.")
-
+    # Reject oversized payloads before decoding (base64 is ~4/3 of the size).
+    if len(body.base64_data) > MAX_UPLOAD_BYTES * 4 // 3 + 16:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10 MB.")
     try:
-        content = base64.b64decode(body.base64_data)
+        content = base64.b64decode(body.base64_data, validate=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid file encoding.")
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    original_name, content_type = validate_upload(body.filename, content)
 
     blob_name    = f"{body.case_id}/respondent_{uuid.uuid4().hex}_{original_name}"
-    blob_service.upload("evidence", blob_name, content, content_type=body.content_type)
+    blob_service.upload("evidence", blob_name, content, content_type=content_type)
     download_url = blob_service.generate_download_url("evidence", blob_name, expiry_hours=720)
 
     file_record = {
@@ -419,7 +416,7 @@ async def respondent_evidence_upload(body: RespondentEvidenceUpload):
         "filename":     original_name,
         "blob_name":    blob_name,
         "url":          download_url,
-        "content_type": body.content_type,
+        "content_type": content_type,
         "uploaded_at":  datetime.now(timezone.utc).isoformat(),
         "uploaded_by":  body.email,
     }

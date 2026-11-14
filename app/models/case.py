@@ -51,6 +51,7 @@ VALID_TRANSITIONS = {
         CaseStatus.PROOF_RESPONSE_PENDING,
         CaseStatus.MEDIATOR_REVIEW,
         CaseStatus.SETTLEMENT_PENDING_CONFIRMATION,
+        CaseStatus.ESCALATING,      # deadline passed with no offers (expiry worker)
         CaseStatus.AUTO_ESCALATED,
     ],
     CaseStatus.WAITING_FOR_CLAIMANT: [
@@ -96,6 +97,7 @@ VALID_TRANSITIONS = {
         CaseStatus.ESCALATING,
     ],
     CaseStatus.PROPOSAL_ISSUED: [
+        CaseStatus.NEGOTIATION_OPEN,  # neither party decided before the deadline
         CaseStatus.WAITING_FOR_CLAIMANT,
         CaseStatus.WAITING_FOR_RESPONDENT,
         CaseStatus.PROOF_REQUESTED,
@@ -105,6 +107,7 @@ VALID_TRANSITIONS = {
         CaseStatus.ESCALATING,
     ],
     CaseStatus.SETTLEMENT_PENDING_CONFIRMATION: [
+        CaseStatus.NEGOTIATION_OPEN,  # confirmation timed out, next round opens
         CaseStatus.SETTLING,
         CaseStatus.WAITING_FOR_CLAIMANT,
         CaseStatus.WAITING_FOR_RESPONDENT,

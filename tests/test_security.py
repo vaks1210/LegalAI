@@ -58,3 +58,38 @@ def test_otp_is_numeric_and_six_digits():
     codes = {generate_otp() for _ in range(50)}
     assert all(len(c) == 6 and c.isdigit() for c in codes)
     assert len(codes) > 40
+
+
+def _case_for_uploads(client, login):
+    from tests.test_e2e_local import _submission
+    headers = login("uploader@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="uploader@example.com", respondent_email="up-resp@example.com",
+    ))
+    return r.json()["case_id"], headers
+
+
+def test_upload_content_type_comes_from_extension_not_client(client, login):
+    case_id, headers = _case_for_uploads(client, login)
+    r = client.post(
+        f"/api/cases/{case_id}/evidence-upload", headers=headers,
+        files={"file": ("../../evil.txt", b"<script>alert(1)</script>", "text/html")},
+    )
+    assert r.status_code == 200, r.text
+    rec = r.json()
+    assert rec["content_type"].startswith("text/plain")
+    assert "/" not in rec["filename"] and ".." not in rec["filename"]
+    served = client.get(rec["url"].split("http://testserver", 1)[1])
+    assert served.status_code == 200
+    assert served.headers["content-type"].startswith("text/plain")
+
+
+def test_upload_rejects_bad_type_and_oversize(client, login):
+    from app.core.uploads import MAX_UPLOAD_BYTES
+    case_id, headers = _case_for_uploads(client, login)
+    r = client.post(f"/api/cases/{case_id}/evidence-upload", headers=headers,
+                    files={"file": ("payload.html", b"<html></html>", "text/html")})
+    assert r.status_code == 400
+    r = client.post(f"/api/cases/{case_id}/evidence-upload", headers=headers,
+                    files={"file": ("big.pdf", b"0" * (MAX_UPLOAD_BYTES + 1), "application/pdf")})
+    assert r.status_code == 413
