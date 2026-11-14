@@ -5,7 +5,7 @@ import io
 from app.core.dependencies import get_current_user
 from app.core.exceptions import CaseNotFound, UnauthorizedAccess
 from app.services.cosmos_service import cosmos_service
-from app.services.blob_service import blob_service
+from app.services.blob_service import blob_service, refresh_case_urls
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -16,10 +16,11 @@ def _get_case_and_verify(case_id: str, user_email: str) -> dict:
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"] != user_email and
-            case["respondent_email"] != user_email):
+    email = user_email.lower()
+    if (case["claimant_email"].lower() != email and
+            case["respondent_email"].lower() != email):
         raise UnauthorizedAccess()
-    return case
+    return refresh_case_urls(case)
 
 
 @router.get("/{case_id}/demand-letter")

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.background import in_thread
 from app.config import settings
 from app.core.exceptions import CaseNotFound
 from app.models.case import CaseStatus
@@ -216,7 +217,7 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
 
     # Trigger settlement in background (generates PDF + emails both parties)
     from app.routers.negotiation import _handle_settlement
-    background_tasks.add_task(_handle_settlement, body.case_id)
+    background_tasks.add_task(in_thread(_handle_settlement), body.case_id)
 
     return {
         "message":        f"You have accepted Rs. {settled_amount:,.0f}. Settlement agreement is being generated.",
@@ -272,7 +273,7 @@ async def decline_participation(body: RespondentVerify, background_tasks: Backgr
 
     cosmos_service.transition_case(body.case_id, CaseStatus.AUTO_ESCALATED)
 
-    background_tasks.add_task(_generate_declined_court_file, body.case_id, case)
+    background_tasks.add_task(in_thread(_generate_declined_court_file), body.case_id, case)
 
     return {
         "message": (

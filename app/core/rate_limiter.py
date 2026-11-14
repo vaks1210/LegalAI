@@ -1,7 +1,8 @@
 import time
 import logging
 from collections import defaultdict
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -49,13 +50,17 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                     f"Rate limit exceeded | ip={client_ip} | path={path} | "
                     f"count={len(self._requests[key])} | limit={max_req}/{window}s"
                 )
-                raise HTTPException(
+                # An HTTPException raised inside BaseHTTPMiddleware is not
+                # handled by FastAPI and surfaces as a 500 — return the 429.
+                retry_after = int(window - (now - self._requests[key][0])) + 1
+                return JSONResponse(
                     status_code=429,
-                    detail=(
+                    headers={"Retry-After": str(max(retry_after, 1))},
+                    content={"detail": (
                         f"Too many requests. Maximum {max_req} requests "
                         f"per {window} seconds for this endpoint. "
                         f"Please wait and try again."
-                    ),
+                    )},
                 )
 
             self._requests[key].append(now)

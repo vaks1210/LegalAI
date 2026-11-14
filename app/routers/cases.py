@@ -4,14 +4,16 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
+from app.core.background import in_thread
 from app.agents.strategy_agent import generate_case_strategy
 from app.config import settings
 from app.core.case_router import route_case
 from app.core.dependencies import get_current_user
 from app.core.exceptions import CaseNotFound, ContentSafetyViolation, UnauthorizedAccess
 from app.models.case import CaseStatus, DisputeSubmission
-from app.services.blob_service import blob_service
+from app.services.blob_service import blob_service, refresh_case_urls
 from app.services.content_safety import content_safety_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
@@ -69,7 +71,8 @@ async def submit_case(
     cosmos_service.transition_case(case_id, CaseStatus.ANALYZING)
 
     # 6. Fast case router (sync)
-    routing = route_case(
+    routing = await run_in_threadpool(
+        route_case,
         dispute_text=body.dispute_text,
         claim_amount=body.claim_amount,
         respondent_type=body.respondent_type.value,
@@ -80,7 +83,7 @@ async def submit_case(
     # 7. Criminal → no mediation
     if routing.get("is_criminal") or routing["track"] == "criminal":
         cosmos_service.transition_case(case_id, CaseStatus.CRIMINAL_ADVISORY)
-        background_tasks.add_task(_handle_criminal_advisory, case_id)
+        background_tasks.add_task(in_thread(_handle_criminal_advisory), case_id)
         return {
             "case_id": case_id,
             "status":  "CRIMINAL_ADVISORY",
@@ -92,7 +95,7 @@ async def submit_case(
         }
 
     # 8. Background pipeline for all other tracks
-    background_tasks.add_task(_run_full_pipeline, case_id)
+    background_tasks.add_task(in_thread(_run_full_pipeline), case_id)
 
     return {
         "case_id": case_id,
@@ -164,7 +167,10 @@ async def _run_full_pipeline(case_id: str):
                 logger.error(f"Agent failed | name={agent_name} | case_id={case_id} | error={agent_err}")
                 cosmos_service.update_case(case_id, {f"{agent_name}_error": str(agent_err)})
 
-        cosmos_service.transition_case(case_id, CaseStatus.ANALYZED)
+        cosmos_service.transition_case(
+            case_id, CaseStatus.ANALYZED,
+            {"analyzed_at": datetime.now(timezone.utc).isoformat()},
+        )
         track_case_event(case_id, "PIPELINE_COMPLETE")
         logger.info(f"Pipeline complete | case_id={case_id}")
 
@@ -187,7 +193,7 @@ async def _run_full_pipeline(case_id: str):
 
 @router.get("/my-cases")
 async def get_my_cases(current_user: dict = Depends(get_current_user)):
-    cases = cosmos_service.get_cases_by_email(current_user["email"])
+    cases = [refresh_case_urls(c) for c in cosmos_service.get_cases_by_email(current_user["email"])]
     return {"cases": cases, "total": len(cases)}
 
 
@@ -217,7 +223,7 @@ async def get_case(case_id: str, current_user: dict = Depends(get_current_user))
         raise CaseNotFound(case_id)
     if case["claimant_email"].lower() != current_user["email"].lower():
         raise UnauthorizedAccess()
-    return case
+    return refresh_case_urls(case)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -338,7 +344,7 @@ async def generate_strategy(case_id: str, current_user: dict = Depends(get_curre
     if case["claimant_email"].lower() != current_user["email"].lower():
         raise UnauthorizedAccess()
 
-    strategy = generate_case_strategy(case)
+    strategy = await run_in_threadpool(generate_case_strategy, case)
     cosmos_service.update_case(case_id, {"strategy_data": strategy})
     return strategy
 
@@ -377,7 +383,7 @@ async def confirm_payment(
         })
         return {"message": "Payment confirmed. Case fully resolved.", "outcome": "PAYMENT_RECEIVED"}
 
-    background_tasks.add_task(_generate_and_send_breach_notice, case_id)
+    background_tasks.add_task(in_thread(_generate_and_send_breach_notice), case_id)
     return {
         "message": "Payment breach recorded. A Breach of Settlement Notice is being generated.",
         "outcome": "BREACH_RECORDED",
@@ -479,7 +485,8 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
     events = [{"timestamp": case["created_at"], "event": "CASE_SUBMITTED", "label": "Case submitted"}]
 
     if case.get("intake_data"):
-        events.append({"timestamp": case.get("updated_at"), "event": "ANALYZED", "label": "AI analysis complete"})
+        analyzed_at = case.get("analyzed_at") or case.get("created_at")
+        events.append({"timestamp": analyzed_at, "event": "ANALYZED", "label": "AI analysis complete"})
 
     for r in rounds:
         rn = r["round_number"]

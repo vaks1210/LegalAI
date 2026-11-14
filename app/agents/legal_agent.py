@@ -674,27 +674,8 @@ def _post_process(result: dict, case: dict, track: str, intake_data: dict) -> di
 
 
 def _fallback_legal_output(case: dict, track: str) -> dict:
-    return {
-        "track":                   track,
-        "applicable_laws":         [],
-        "legal_standing":          "MODERATE",
-        "legal_standing_reason":   "Legal analysis unavailable — manual review recommended",
-        "jurisdiction_state":      case.get("claimant_state", "India"),
-        "forum":                   "civil_court",
-        "forum_name":              "District Civil Court",
-        "limitation_period_years": 3,
-        "is_within_limitation":    True,
-        "limitation_notes":        "Could not determine — seek legal advice",
-        "claimant_rights":         ["Right to file civil suit", "Right to legal representation"],
-        "respondent_defenses":     ["To be determined"],
-        "key_legal_issues":        ["To be determined"],
-        "precedent_cases":         [],
-        "legal_notice_required":   True,
-        "legal_notice_notice_period_days": 15,
-        "relief_available":        ["To be determined"],
-        "filing_steps":            ["Consult a licensed advocate"],
-        "recommended_immediate_actions": ["Preserve all evidence immediately"],
-        "total_statutory_dues":    0,
-        "statutory_entitlements":  {},
-        "error":                   "Legal agent failed — fallback output",
-    }
+    """Rule-based legal mapping used when the LLM is unavailable."""
+    from app.agents import offline_analysis
+    result = offline_analysis.legal(case, track, case.get("intake_data") or {})
+    result["error"] = "Legal agent LLM unavailable — rule-based statute mapping applied"
+    return result

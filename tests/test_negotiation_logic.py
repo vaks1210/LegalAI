@@ -92,6 +92,7 @@ class NegotiationLogicTests(unittest.TestCase):
             round_number=2,
             claimant_offer=50000,
             respondent_offer=30000,
+            analytics={"zopa_min": 32000, "zopa_max": 48000, "zopa_optimal": 40000},
         )
         self.assertIn("reasoning_breakdown", proposal)
         self.assertIn("live_reasoning_log", proposal)

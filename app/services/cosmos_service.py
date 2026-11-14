@@ -1,3 +1,4 @@
+import os
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -6,20 +7,46 @@ from azure.cosmos import CosmosClient, exceptions
 from app.config import settings
 from app.models.case import CaseStatus, TERMINAL_STATES
 from app.core.state_machine import transition
+from app.services.local_store import LocalDocumentStore, LocalNotFoundError
+
+NOT_FOUND = (exceptions.CosmosResourceNotFoundError, LocalNotFoundError)
 
 logger = logging.getLogger(__name__)
 
 
 class CosmosService:
-    def __init__(self):
-        self.client = CosmosClient.from_connection_string(
-            settings.COSMOS_CONNECTION_STRING
-        )
-        self.db           = self.client.get_database_client(settings.COSMOS_DATABASE_NAME)
-        self.cases        = self.db.get_container_client("cases")
-        self.users        = self.db.get_container_client("users")
-        self.negotiations = self.db.get_container_client("negotiations")
-        self.documents    = self.db.get_container_client("documents")
+    """
+    Data layer. Uses Azure Cosmos DB when COSMOS_CONNECTION_STRING is set,
+    otherwise a local SQLite document store with the same behaviour.
+    """
+
+    def __init__(self, local_path: Optional[str] = None):
+        self.local = local_path is not None or not settings.use_cosmos
+        if self.local:
+            path = local_path or os.path.join(settings.LOCAL_DATA_DIR, "legalai.db")
+            store = LocalDocumentStore(path)
+            self.store        = store
+            self.db           = None
+            self.cases        = store.container("cases")
+            self.users        = store.container("users")
+            self.negotiations = store.container("negotiations")
+            self.documents    = store.container("documents")
+        else:
+            self.client = CosmosClient.from_connection_string(
+                settings.COSMOS_CONNECTION_STRING
+            )
+            self.db           = self.client.get_database_client(settings.COSMOS_DATABASE_NAME)
+            self.cases        = self.db.get_container_client("cases")
+            self.users        = self.db.get_container_client("users")
+            self.negotiations = self.db.get_container_client("negotiations")
+            self.documents    = self.db.get_container_client("documents")
+
+    def ping(self) -> str:
+        if self.local:
+            self.store.ping()
+            return "sqlite"
+        self.db.read()
+        return "cosmos"
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -46,7 +73,7 @@ class CosmosService:
     def get_case(self, case_id: str) -> Optional[dict]:
         try:
             return self.cases.read_item(item=case_id, partition_key=case_id)
-        except exceptions.CosmosResourceNotFoundError:
+        except NOT_FOUND:
             return None
 
     def update_case(self, case_id: str, updates: dict) -> dict:
@@ -75,6 +102,13 @@ class CosmosService:
         return updated
 
     def get_cases_by_email(self, email: str) -> list:
+        if self.local:
+            e = email.lower()
+            return self.cases.find(
+                lambda c: (c.get("claimant_email") or "").lower() == e
+                or (c.get("respondent_email") or "").lower() == e,
+                sort_key="created_at", descending=True,
+            )
         q = ("SELECT * FROM c "
              "WHERE c.claimant_email=@e OR c.respondent_email=@e "
              "ORDER BY c.created_at DESC")
@@ -85,6 +119,8 @@ class CosmosService:
         ))
 
     def get_cases_by_status(self, status: CaseStatus) -> list:
+        if self.local:
+            return self.cases.find(lambda c: c.get("status") == status.value)
         q = "SELECT * FROM c WHERE c.status = @s"
         return list(self.cases.query_items(
             query=q,
@@ -94,6 +130,11 @@ class CosmosService:
 
     def get_cases_needing_expiry_check(self) -> list:
         """All non-terminal cases that have a deadline set."""
+        if self.local:
+            done = {"SETTLED", "ESCALATED", "AUTO_ESCALATED", "ABANDONED", "CRIMINAL_ADVISORY"}
+            return self.cases.find(
+                lambda c: "current_deadline" in c and c.get("status") not in done
+            )
         q = ("SELECT * FROM c "
              "WHERE IS_DEFINED(c.current_deadline) "
              "AND c.status NOT IN ('SETTLED','ESCALATED',"
@@ -125,7 +166,8 @@ class CosmosService:
             ic = dict(view["intake_data"])
             ic.pop("evidence_strength_score", None)
             view["intake_data"] = ic
-        return view
+        from app.services.blob_service import refresh_case_urls
+        return refresh_case_urls(view)
 
     def set_respondent_verified(self, case_id: str) -> dict:
         return self.update_case(case_id, {"respondent_verified": True})
@@ -158,7 +200,11 @@ class CosmosService:
     # ── Users ─────────────────────────────────────────────────
 
     def get_user_by_email(self, email: str) -> Optional[dict]:
-        q = "SELECT * FROM c WHERE c.email = @e"
+        if self.local:
+            # OTP documents share the users container but have an "otp" field.
+            r = self.users.find(lambda u: u.get("email") == email and "otp" not in u)
+            return r[0] if r else None
+        q = "SELECT * FROM c WHERE c.email = @e AND NOT IS_DEFINED(c.otp)"
         r = list(self.users.query_items(
             query=q,
             parameters=[{"name": "@e", "value": email}],
@@ -193,7 +239,7 @@ class CosmosService:
         otp_id = f"otp_{email.replace('@','_').replace('.','_')}"
         try:
             return self.users.read_item(item=otp_id, partition_key=otp_id)
-        except exceptions.CosmosResourceNotFoundError:
+        except NOT_FOUND:
             return None
 
     def delete_otp(self, email: str):
@@ -217,6 +263,9 @@ class CosmosService:
         return neg
 
     def get_negotiation_by_case(self, case_id: str) -> Optional[dict]:
+        if self.local:
+            r = self.negotiations.find(lambda n: n.get("case_id") == case_id)
+            return r[0] if r else None
         q = "SELECT * FROM c WHERE c.case_id = @cid"
         r = list(self.negotiations.query_items(
             query=q,
@@ -309,7 +358,12 @@ class CosmosService:
         return doc
 
     def get_documents_by_case(self, case_id: str) -> list:
-        q = ("SELECT * FROM c WHERE c.case_id=@cid "
+        if self.local:
+            return self.documents.find(
+                lambda d: d.get("case_id") == case_id and "doc_type" in d,
+                sort_key="created_at", descending=True,
+            )
+        q = ("SELECT * FROM c WHERE c.case_id=@cid AND IS_DEFINED(c.doc_type) "
              "ORDER BY c.created_at DESC")
         return list(self.documents.query_items(
             query=q,

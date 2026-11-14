@@ -290,7 +290,8 @@ async def start_expiry_worker():
     logger.info("Expiry worker starting — runs every 60 minutes")
     while True:
         try:
-            await run_expiry_check()
+            # Blocking DB/PDF/email work — keep it off the request event loop.
+            await asyncio.to_thread(lambda: asyncio.run(run_expiry_check()))
         except Exception as e:
             logger.error(f"Expiry worker error: {e}")
         await asyncio.sleep(3600)

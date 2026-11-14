@@ -630,24 +630,27 @@ def _fallback_analytics(case: dict, track: str, intake: dict, legal: dict) -> di
     else:
         optimal = zopa_min = zopa_max = None
 
+    from app.agents.offline_analysis import win_probability
+    win = win_probability(legal_standing, evidence_score)
+
     return {
         "track":               track,
-        "win_probability":     50,
-        "win_probability_band": "40–60%",
+        "win_probability":     win,
+        "win_probability_band": f"{max(0, win - 10)}–{min(100, win + 10)}%",
         "confidence_level":    "LOW",
-        "confidence_reason":   "Analytics agent failed — fallback estimates used",
+        "confidence_reason":   "Rule-based estimate from legal standing and evidence (no AI model used)",
         "zopa_min":            zopa_min,
         "zopa_max":            zopa_max,
         "zopa_optimal":        optimal,
         "negotiation_anchor":  optimal,
-        "zopa_reasoning":      "Fallback calculation: base percentage applied to claim amount",
+        "zopa_reasoning":      f"Rule-based: {legal_standing} legal standing with evidence score {evidence_score}/100 applied to the claim amount",
         "court_cost_estimate": max(50000, (claim or 0) * 0.05),
         "court_cost_breakdown": {"filing_fee": 5000, "lawyer_fees": 40000, "miscellaneous": 10000},
         "time_to_resolution_months": 30,
         "recommended_path":    "mediation",
-        "recommended_path_reason": "Fallback — mediation always preferable to costly litigation",
+        "recommended_path_reason": "Mediation is faster and far cheaper than litigation for a claim of this size",
         "settlement_urgency":  "MEDIUM",
         "payment_recovery_probability": 60,
-        "payment_recovery_notes": "Fallback estimate",
+        "payment_recovery_notes": "Rule-based estimate",
         "error": "Analytics agent failed — fallback output applied",
     }

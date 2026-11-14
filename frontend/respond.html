@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LegalAI Resolver — Respond to Dispute</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+<script src="/static/vendor/axios.min.js"></script>
 <style>
   :root {
     --navy:#0b1f3a; --blue:#1859b8; --cyan:#13b8c8;
@@ -432,7 +432,7 @@ function renderActionPanel(ng, c) {
           </div>
           <div class="card" style="padding:14px;margin-top:12px;background:rgba(255,255,255,0.72);">
             <div class="section-title">Mediator Reasoning Log</div>
-            ${(ng.ai_reasoning_log || []).map(step => `<div style="font-size:13px;padding:3px 0;">â€¢ ${step}</div>`).join('') || '<div style="font-size:13px;color:var(--muted);">No detailed mediator log yet.</div>'}
+            ${(ng.ai_reasoning_log || []).map(step => `<div style="font-size:13px;padding:3px 0;">• ${step}</div>`).join('') || '<div style="font-size:13px;color:var(--muted);">No detailed mediator log yet.</div>'}
           </div>
         ` : ''}
         <div style="display:flex;gap:12px;margin-top:16px;">

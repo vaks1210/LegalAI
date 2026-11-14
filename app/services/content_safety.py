@@ -11,10 +11,17 @@ logger = logging.getLogger(__name__)
 
 class ContentSafetyService:
     def __init__(self):
-        self.client = ContentSafetyClient(
-            endpoint=settings.CONTENT_SAFETY_ENDPOINT,
-            credential=AzureKeyCredential(settings.CONTENT_SAFETY_KEY)
-        )
+        # Without Azure credentials only the local abuse-pattern rules run.
+        self.client = None
+        if settings.use_azure_content_safety:
+            self.client = ContentSafetyClient(
+                endpoint=settings.CONTENT_SAFETY_ENDPOINT,
+                credential=AzureKeyCredential(settings.CONTENT_SAFETY_KEY)
+            )
+
+    @property
+    def mode(self) -> str:
+        return "azure" if self.client else "local_rules"
 
     def sanitize_input(self, text: str) -> str:
         """
@@ -42,6 +49,9 @@ class ContentSafetyService:
 
         # Check for obvious abuse patterns before API call
         self._check_abuse_patterns(clean_text)
+
+        if self.client is None:
+            return {}
 
         # Azure Content Safety API check
         try:

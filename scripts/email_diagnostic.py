@@ -1,7 +1,9 @@
 """
 Quick diagnostic - tests SendGrid email directly.
-Run: python -m tests.test_email_diagnostic
+Run: EMAIL_DIAGNOSTIC_TO=you@example.com python -m scripts.email_diagnostic
 """
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv(".env.local")
@@ -11,7 +13,7 @@ import httpx
 from app.config import settings
 
 
-def test_email():
+def run_diagnostic():
     print("\n" + "=" * 60)
     print("SendGrid - Email Diagnostic")
     print("=" * 60)
@@ -32,7 +34,10 @@ def test_email():
         return
     print("  OK Sender email format valid")
 
-    to_email = "gunanimohit1221@gmail.com"
+    to_email = os.getenv("EMAIL_DIAGNOSTIC_TO", "")
+    if not to_email:
+        print("  X Set EMAIL_DIAGNOSTIC_TO to the address that should receive the test")
+        return
     print(f"\n[SENDING TEST EMAIL -> {to_email}]")
 
     payload = {
@@ -92,4 +97,4 @@ def test_email():
 
 
 if __name__ == "__main__":
-    test_email()
+    run_diagnostic()

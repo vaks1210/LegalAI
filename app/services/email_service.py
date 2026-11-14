@@ -1,4 +1,9 @@
+import json
 import logging
+import os
+import re
+import uuid
+from datetime import datetime, timezone
 
 import httpx
 
@@ -11,19 +16,66 @@ SENDGRID_TIMEOUT_SECONDS = 30
 
 
 class EmailService:
-    def __init__(self):
+    def __init__(self, outbox_dir: str | None = None):
         self.api_key = settings.SENDGRID_API_KEY.strip()
         self.sender = settings.SENDGRID_FROM_EMAIL.strip()
+        self.outbox_dir = outbox_dir or os.path.join(settings.LOCAL_DATA_DIR, "outbox")
 
     def is_configured(self) -> bool:
         return bool(self.api_key and self.sender)
 
+    @property
+    def mode(self) -> str:
+        return "sendgrid" if self.is_configured() else "local_outbox"
+
+    def _write_to_outbox(self, to_email: str, subject: str, html_body: str) -> bool:
+        """
+        Local mode: instead of sending, save the email to LOCAL_DATA_DIR/outbox
+        and log it, so every flow (OTP, invites, settlement links) still works.
+        """
+        os.makedirs(self.outbox_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc)
+        record = {
+            "id":      uuid.uuid4().hex[:12],
+            "to":      to_email,
+            "subject": subject,
+            "sent_at": stamp.isoformat(),
+            "html":    html_body,
+            "links":   re.findall(r'href="([^"]+)"', html_body),
+        }
+        fname = f"{stamp.strftime('%Y%m%dT%H%M%S%f')}_{record['id']}.json"
+        with open(os.path.join(self.outbox_dir, fname), "w") as f:
+            json.dump(record, f, indent=2)
+        logger.info(
+            f"Email saved to local outbox | to={to_email} | subject={subject}"
+            + (f" | links={record['links']}" if record["links"] else "")
+        )
+        return True
+
+    def list_outbox(self, to_email: str | None = None, limit: int = 50) -> list:
+        if not os.path.isdir(self.outbox_dir):
+            return []
+        items = []
+        for name in sorted(os.listdir(self.outbox_dir), reverse=True):
+            if not name.endswith(".json"):
+                continue
+            with open(os.path.join(self.outbox_dir, name)) as f:
+                rec = json.load(f)
+            if to_email and rec["to"].lower() != to_email.lower():
+                continue
+            items.append(rec)
+            if len(items) >= limit:
+                break
+        return items
+
     def send(self, to_email: str, subject: str, html_body: str) -> bool:
         if not self.is_configured():
-            logger.error(
-                "Email failed | provider=sendgrid | reason=missing_configuration"
-            )
-            return False
+            if settings.is_production:
+                logger.error(
+                    "Email failed | provider=sendgrid | reason=missing_configuration"
+                )
+                return False
+            return self._write_to_outbox(to_email, subject, html_body)
 
         payload = {
             "personalizations": [{"to": [{"email": to_email}]}],

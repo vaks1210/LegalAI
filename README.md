@@ -159,7 +159,13 @@ legalai-resolver/
 │   └── respond.html               # Respondent portal — offer, accept/reject, decline
 │
 ├── tests/
-│   └── test_e2e.py                # 20-assertion end-to-end test
+│   ├── conftest.py                # Forces local backends + temp data dir
+│   ├── test_e2e_local.py          # Full lifecycle, offline
+│   ├── test_security.py           # OTP lockout, signed links, rate limiting
+│   ├── test_offline_analysis.py   # Rule-based routing / intake / legal
+│   └── test_negotiation_logic.py
+│
+├── scripts/                       # Live smoke test + SendGrid diagnostic
 │
 ├── requirements.txt
 ├── startup.sh                     # Azure App Service startup command
@@ -168,7 +174,46 @@ legalai-resolver/
 
 ---
 
-## ⚙️ Running Locally
+## ⚡ Quick Start (no cloud account needed)
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Open [http://localhost:8000](http://localhost:8000). That's it — every integration falls back to a local implementation when its credentials are missing:
+
+| Integration | Configured | Not configured (local mode) |
+|---|---|---|
+| Database | Azure Cosmos DB | SQLite at `data/legalai.db` |
+| File storage | Azure Blob (SAS links) | `data/files/` with HMAC-signed, expiring links |
+| LLM | Azure OpenAI **or** OpenAI / any OpenAI-compatible server | Rule-based analysis: keyword classification, evidence scoring, curated Indian statute table, ZOPA maths |
+| Email | SendGrid | Saved to `data/outbox/` — browse at `GET /api/dev/outbox`; login codes are shown in the UI |
+| Content safety | Azure AI Content Safety | Local abuse-pattern rules |
+
+`GET /health` reports exactly which backend each integration is using. Mix and match freely — e.g. set only `OPENAI_API_KEY` to get full AI analysis with everything else local. See [`.env.example`](.env.example) for every option.
+
+> ⚠️ Local email mode returns login codes in the API response. It is disabled when `ENVIRONMENT=production` (which also refuses to start without a strong `JWT_SECRET_KEY`). Never expose a dev-mode instance publicly.
+
+### Docker
+
+```bash
+docker build -t legalai .
+docker run -p 8000:8000 -v legalai-data:/data legalai
+```
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite runs fully offline and walks the whole lifecycle — login → submit → analysis → demand-letter PDF → invite → respondent offers → AI proposal → both accept → settlement PDF — plus auth, criminal-routing and signed-link security checks. CI runs it on every push (`.github/workflows/tests.yml`). `scripts/smoke_test_live.py` exercises a running deployment.
+
+---
+
+## ⚙️ Running Locally (with Azure services)
 
 ### Prerequisites
 - Python 3.11+
@@ -390,12 +435,14 @@ curl https://legalai-resolver.azurewebsites.net/health
 | `POST` | `/api/negotiation/submit-claimant-offer` | Submit claimant round offer | JWT |
 | `POST` | `/api/negotiation/submit-respondent-offer` | Submit respondent round offer | None |
 | `POST` | `/api/negotiation/proposal-response` | Accept or Reject AI proposal | Optional |
-| `GET` | `/api/negotiation/status/{id}` | Full negotiation state + round details | JWT |
+| `GET` | `/api/negotiation/status/{id}` | Full negotiation state + round details (claimant only) | JWT |
 | `GET` | `/api/documents/{id}/all` | All available document download URLs | JWT |
 | `GET` | `/api/documents/{id}/demand-letter` | Demand letter SAS URL | JWT |
 | `GET` | `/api/documents/{id}/settlement` | Settlement agreement SAS URL | JWT |
 | `GET` | `/api/documents/{id}/court-file` | Court file SAS URL | JWT |
-| `GET` | `/health` | Service health check for all Azure services | None |
+| `GET` | `/health` | Backend report (`?deep=true` also pings the LLM) | None |
+| `GET` | `/api/files/{container}/{blob}` | Signed, expiring file download (local storage mode) | Signature |
+| `GET` | `/api/dev/outbox?email=X` | Captured emails (local email mode, non-production only) | None |
 
 ---
 
@@ -438,7 +485,8 @@ curl https://legalai-resolver.azurewebsites.net/health
 - Settlement agreements are AI-drafted — should be reviewed by a lawyer before use in court
 - In-memory rate limiter — for multi-worker production, replace with Redis
 - PDFs lost on server restart if not using Blob Storage (ephemeral on free hosting tiers)
-- No authentication on respondent portal — verified by email address match only
+- No authentication on respondent portal — verified by email address match only (a signed per-respondent invite token is the planned fix)
+- Offline (no-LLM) mode gives a rule-based baseline only — configure an LLM for case-specific reasoning
 
 ---
 

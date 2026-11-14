@@ -1,3 +1,4 @@
+import hmac
 import logging
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
@@ -19,6 +20,8 @@ from app.core.disclaimer import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+MAX_OTP_ATTEMPTS = 5
 
 
 class OTPRequest(BaseModel):
@@ -51,6 +54,8 @@ async def request_otp(body: OTPRequest):
     to the server console so testing can continue without email service.
     """
     email      = body.email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1] or len(email) > 254:
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
     otp        = generate_otp()
     expires_at = get_otp_expiry()
 
@@ -64,6 +69,17 @@ async def request_otp(body: OTPRequest):
     )
 
     sent = email_service.send_otp(email, otp, name)
+
+    # Local mode (no email provider, not production): hand the OTP back so
+    # the app is usable without any email setup. Never happens in production.
+    if sent and not email_service.is_configured() and not settings.is_production:
+        logger.warning(f"DEV MODE | OTP for {email}: {otp}")
+        return {
+            "message":  "Dev mode: no email provider configured, so your code is shown here.",
+            "email":    email,
+            "dev_mode": True,
+            "dev_otp":  otp,
+        }
 
     if not sent:
         if settings.ENVIRONMENT == "development":
@@ -104,8 +120,20 @@ async def verify_otp(body: OTPVerify):
         cosmos_service.delete_otp(email)
         raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
 
-    if otp_record["otp"] != body.otp.strip():
-        raise HTTPException(status_code=400, detail="Incorrect OTP. Please check and try again.")
+    if not hmac.compare_digest(otp_record["otp"], body.otp.strip()):
+        attempts = int(otp_record.get("attempts", 0)) + 1
+        if attempts >= MAX_OTP_ATTEMPTS:
+            cosmos_service.delete_otp(email)
+            raise HTTPException(
+                status_code=400,
+                detail="Too many incorrect attempts. Please request a new OTP.",
+            )
+        otp_record["attempts"] = attempts
+        cosmos_service.users.upsert_item(body=otp_record)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Incorrect OTP. {MAX_OTP_ATTEMPTS - attempts} attempt(s) left.",
+        )
 
     cosmos_service.delete_otp(email)
 

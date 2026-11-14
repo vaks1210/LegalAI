@@ -356,30 +356,10 @@ INSTRUCTIONS:
 
 def _fallback_intake(case: dict, track: str, error: str) -> dict:
     """
-    Safe fallback so the pipeline never crashes even if intake fails.
-    Downstream agents receive minimal but valid data.
+    Fallback when the LLM is unavailable: rule-based intake with the same
+    schema, so downstream agents and the UI keep working.
     """
-    return {
-        "dispute_type":            "Unknown",
-        "dispute_category":        "other",
-        "track_confirmed":         track,
-        "severity":                "MEDIUM",
-        "key_facts":               [case.get("dispute_text", "")[:200]],
-        "parties_summary":         f"{case['claimant_name']} vs {case['respondent_name']}",
-        "incident_date_confirmed": case.get("incident_date"),
-        "jurisdiction_state":      case.get("claimant_state", "India"),
-        "jurisdiction_city":       case.get("claimant_city"),
-        "evidence_available":      [],
-        "evidence_strength_score": 35,
-        "missing_proof_checklist": ["All supporting documents — intake failed"],
-        "is_time_barred":          False,
-        "limitation_notes":        None,
-        "respondent_is_company":   case.get("respondent_type") == "company",
-        "key_issues":              ["To be determined — intake agent failed"],
-        "claimant_strengths":      [],
-        "claimant_weaknesses":     ["Intake analysis unavailable"],
-        "confirmed_claim_amount":  case.get("claim_amount"),
-        "currency":                case.get("currency", "INR"),
-        "recommended_approach":    "mediation",
-        "error":                   error,
-    }
+    from app.agents import offline_analysis
+    result = offline_analysis.intake(case, track)
+    result["error"] = error
+    return result

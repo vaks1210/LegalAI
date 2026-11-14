@@ -1,5 +1,4 @@
-import random
-import string
+import secrets
 import logging
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
@@ -10,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def generate_otp(length: int = 6) -> str:
     """Generate a cryptographically random 6-digit numeric OTP."""
-    return "".join(random.choices(string.digits, k=length))
+    return "".join(secrets.choice("0123456789") for _ in range(length))
 
 
 def create_access_token(data: dict) -> str:
@@ -56,3 +55,15 @@ def is_otp_expired(expires_at: str) -> bool:
     """Returns True if the OTP expiry timestamp has passed."""
     expiry = datetime.fromisoformat(expires_at)
     return datetime.now(timezone.utc) > expiry
+
+
+def validate_security_settings() -> None:
+    """Refuse to start in production with an insecure JWT secret."""
+    secret = settings.JWT_SECRET_KEY
+    if settings.is_production and (secret in ("", "changeme") or len(secret) < 32):
+        raise RuntimeError(
+            "JWT_SECRET_KEY must be set to a strong secret (>= 32 chars) in production. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if secret == "changeme":
+        logger.warning("JWT_SECRET_KEY is the insecure default — fine for local dev only.")

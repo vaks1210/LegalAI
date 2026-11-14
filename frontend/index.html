@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LegalAI Resolver — AI-Powered Dispute Resolution</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+<script src="/static/vendor/axios.min.js"></script>
 <style>
   :root {
     --navy:   #0b1f3a;
@@ -884,7 +884,7 @@ async function requestOtp() {
 
   try {
     showAlert('loginMsg', 'Sending OTP...', 'info');
-    await axios.post(`${API}/api/auth/request-otp`, { email, display_name: name });
+    const otpRes = await axios.post(`${API}/api/auth/request-otp`, { email, display_name: name });
     document.getElementById('otpEmailDisplay').textContent = email;
     document.getElementById('loginStep1').classList.add('hidden');
     document.getElementById('loginStep2').classList.remove('hidden');
@@ -894,7 +894,13 @@ async function requestOtp() {
       document.getElementById('loginState').value = user.state || '';
       document.getElementById('loginPhone').value = user.phone || '';
     }
-    showAlert('loginMsg', 'OTP sent! Check your email.', 'success');
+    if (otpRes.data?.dev_otp) {
+      // Local dev mode (no email provider configured): prefill the code.
+      document.getElementById('otpInput').value = otpRes.data.dev_otp;
+      showAlert('loginMsg', `Dev mode: no email provider configured. Your code is ${otpRes.data.dev_otp} (prefilled).`, 'info');
+    } else {
+      showAlert('loginMsg', 'OTP sent! Check your email.', 'success');
+    }
   } catch(e) {
     showAlert('loginMsg', e.response?.data?.detail || 'Failed to send OTP.', 'error');
   }
@@ -1396,11 +1402,11 @@ async function loadAnalysis(caseId) {
         <div class="offer-grid" style="margin-top:14px;">
           <div class="offer-box">
             <div class="offer-label">Court Cost</div>
-            <div class="offer-amount" style="font-size:22px;">${a.court_cost_estimate ? 'Rs. ' + Number(a.court_cost_estimate).toLocaleString('en-IN') : 'â€”'}</div>
+            <div class="offer-amount" style="font-size:22px;">${a.court_cost_estimate ? 'Rs. ' + Number(a.court_cost_estimate).toLocaleString('en-IN') : '—'}</div>
           </div>
           <div class="offer-box">
             <div class="offer-label">Platform Cost</div>
-            <div class="offer-amount" style="font-size:22px;">${a.settlement_cost ? 'Rs. ' + Number(a.settlement_cost).toLocaleString('en-IN') : 'â€”'}</div>
+            <div class="offer-amount" style="font-size:22px;">${a.settlement_cost ? 'Rs. ' + Number(a.settlement_cost).toLocaleString('en-IN') : '—'}</div>
           </div>
         </div>
       </div>

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, UnauthorizedAccess
@@ -15,6 +16,7 @@ from app.models.negotiation import (
     ProposalResponseRequest,
     SubmitOfferRequest,
 )
+from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
 
@@ -200,7 +202,7 @@ async def _handle_offer_submission(
             CaseStatus.MEDIATOR_REVIEW,
             {"current_round": round_number, "action_required_by": None},
         )
-        background_tasks.add_task(_run_mediation, case["id"], neg["id"], round_number)
+        background_tasks.add_task(in_thread(_run_mediation), case["id"], neg["id"], round_number)
         return {
             "message":      "Both offers received. AI Mediator is generating a proposal.",
             "status":       CaseStatus.MEDIATOR_REVIEW.value,
@@ -462,7 +464,10 @@ async def proposal_response(
 
     # Auth: claimant must be logged in; respondent has no auth
     if body.party == "claimant":
-        if current_user and current_user["email"] != case["claimant_email"]:
+        # Previously an unauthenticated request could decide as the claimant.
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Login required to respond as claimant.")
+        if current_user["email"].lower() != case["claimant_email"].lower():
             raise UnauthorizedAccess()
 
     neg = cosmos_service.get_negotiation_by_case(body.case_id)
@@ -508,21 +513,21 @@ async def proposal_response(
         if (cl_decision == ProposalDecision.ACCEPT.value and
                 rs_decision == ProposalDecision.ACCEPT.value):
             # BOTH ACCEPT → settle
-            background_tasks.add_task(_handle_settlement, body.case_id)
+            background_tasks.add_task(in_thread(_handle_settlement), body.case_id)
             return {"message": "Both parties accepted. Generating settlement agreement.", "outcome": "SETTLED"}
 
         else:
             # At least one rejected
             max_rounds = case.get("max_rounds", 3)
             if round_number >= max_rounds:
-                background_tasks.add_task(_handle_escalation, body.case_id)
+                background_tasks.add_task(in_thread(_handle_escalation), body.case_id)
                 return {
                     "message": f"{max_rounds} rounds completed without settlement. Generating court file.",
                     "outcome": "ESCALATED",
                 }
             else:
                 next_round = round_number + 1
-                background_tasks.add_task(_start_next_round, body.case_id, next_round)
+                background_tasks.add_task(in_thread(_start_next_round), body.case_id, next_round)
                 return {
                     "message":    f"Proposal rejected. Round {next_round} is now open.",
                     "outcome":    "NEXT_ROUND",
@@ -817,15 +822,15 @@ async def proof_response(
 @router.get("/status/{case_id}")
 async def get_negotiation_status(
     case_id: str,
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(get_current_user),
 ):
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
 
-    # Only authenticated claimants get the full negotiation status via this endpoint.
-    # Respondents use the respondent router's GET /case/{case_id}.
-    if current_user is not None and current_user.get("email") != case.get("claimant_email"):
+    # Only the authenticated claimant gets the full negotiation status here
+    # (it includes both parties' offers). Respondents use GET /api/respondent/case/{id}.
+    if current_user.get("email", "").lower() != (case.get("claimant_email") or "").lower():
         raise UnauthorizedAccess()
 
     neg          = cosmos_service.get_negotiation_by_case(case_id)
@@ -860,7 +865,7 @@ async def get_negotiation_status(
         "max_rounds":    case.get("max_rounds", 3),
         "track":         case.get("track"),
         "action_required_by": case.get("action_required_by"),
-        "settlement_url":     case.get("settlement_url"),
+        "settlement_url":     blob_service.refresh_url(case.get("settlement_url")),
         "insights":           _build_insights(case),
         "negotiation": {
             "id":                neg["id"] if neg else None,

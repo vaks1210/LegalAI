@@ -119,17 +119,8 @@ Classify this dispute into exactly one track.
         return result
 
     except Exception as e:
-        logger.error(f"Case router failed: {e}")
-        # Safe fallback — never crash the submission
-        return {
-            "track":               "monetary_civil",
-            "confidence":          0.3,
-            "is_criminal":         False,
-            "is_monetary":         True if claim_amount else False,
-            "respondent_is_company": respondent_type == "company",
-            "dispute_category":    "other",
-            "jurisdiction_state":  claimant_state,
-            "estimated_claim_amount": claim_amount,
-            "criminal_elements":   [],
-            "routing_notes":       "Router failed — fallback classification applied",
-        }
+        logger.warning(f"Case router LLM unavailable ({e}) — using rule-based routing")
+        # Rule-based routing still detects criminal red flags, so violent or
+        # criminal matters are never sent to mediation when the LLM is down.
+        from app.agents import offline_analysis
+        return offline_analysis.route(dispute_text, claim_amount, respondent_type, claimant_state)
