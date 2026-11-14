@@ -1,6 +1,6 @@
 import os
 from functools import lru_cache
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from dotenv import load_dotenv
 
@@ -59,9 +59,7 @@ class Settings(BaseSettings):
     # ── Monitoring ───────────────────────────────────────
     APPINSIGHTS_INSTRUMENTATION_KEY: str = Field(default="")
 
-    class Config:
-        env_file = ".env.local"
-        extra    = "ignore"
+    model_config = SettingsConfigDict(env_file=".env.local", extra="ignore")
 
     # ── Backend detection ────────────────────────────────
     # Each integration falls back to a local implementation when its
