@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.core.exceptions import CaseNotFound, UnauthorizedAccess
+from app.core.exceptions import CaseNotFound, InvalidCaseState, UnauthorizedAccess
 from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
 from app.models.negotiation import (
@@ -189,20 +189,19 @@ async def _handle_offer_submission(
     """
     round_number = round_doc["round_number"]
 
-    # Record this party's offer
-    round_doc[party]["amount"]       = body.offer_amount
-    round_doc[party]["actions"]      = body.demands or body.commitments or []
-    round_doc[party]["explanation"]  = body.explanation
-    round_doc[party]["submitted_at"] = _now()
+    # Record ONLY this party's offer, atomically. Writing back the whole
+    # round could erase the other party's offer if both submit at once.
+    def record_offer(r: dict) -> None:
+        side = r.setdefault(party, {})
+        side["amount"]       = body.offer_amount
+        side["actions"]      = body.demands or body.commitments or []
+        side["explanation"]  = body.explanation
+        side["submitted_at"] = _now()
 
-    cosmos_service.upsert_round_in_negotiation(neg["id"], round_number, round_doc)
+    round_doc = cosmos_service.mutate_round(
+        neg["id"], round_number, record_offer, default=_default_round(neg, round_number)
+    )
     cosmos_service.update_case(case["id"], {"current_round": round_number})
-
-    # Re-read to get latest state of both sides
-    round_doc = cosmos_service.get_round(neg["id"], round_number)
-    if not round_doc:
-        logger.error(f"Round {round_number} not found after upsert | case_id={case['id']}")
-        raise HTTPException(status_code=500, detail="Round data lost after save. Please retry.")
 
     claimant_done   = bool(round_doc["claimant"].get("submitted_at"))
     respondent_done = bool(round_doc["respondent"].get("submitted_at"))
@@ -228,11 +227,21 @@ async def _handle_offer_submission(
         if other == "respondent"
         else CaseStatus.WAITING_FOR_CLAIMANT
     )
-    cosmos_service.transition_case(
-        case["id"],
-        waiting_status,
-        {"current_round": round_number, "action_required_by": other},
-    )
+    try:
+        cosmos_service.transition_case(
+            case["id"],
+            waiting_status,
+            {"current_round": round_number, "action_required_by": other},
+        )
+    except InvalidCaseState:
+        # The other party's offer landed concurrently and already moved the
+        # case on (e.g. to MEDIATOR_REVIEW). Our offer is saved — not an error.
+        latest = cosmos_service.get_case(case["id"])
+        return {
+            "message":      "Offer submitted. Both offers are in; the AI Mediator is working.",
+            "status":       latest["status"],
+            "round_number": round_number,
+        }
     cosmos_service.update_negotiation(neg["id"], {"current_waiting_on": other})
 
     # Send email to the other party telling them to submit
@@ -392,8 +401,7 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
         )
 
         now = _now()
-        cosmos_service.upsert_round_in_negotiation(neg_id, round_number, {
-            **round_doc,
+        cosmos_service.update_round_in_negotiation(neg_id, round_number, {
             "ai_proposed_amount":          proposal.get("proposed_amount"),
             "ai_proposed_actions":         proposal.get("proposed_actions"),
             "ai_reasoning":                proposal.get("reasoning"),
@@ -508,10 +516,14 @@ async def proposal_response(
             "your_decision": current_decision,
         }
 
-    # Record decision
-    round_doc[body.party]["decision"]   = body.decision.value
-    round_doc[body.party]["decided_at"] = _now()
-    cosmos_service.upsert_round_in_negotiation(neg["id"], round_number, round_doc)
+    # Record ONLY this party's decision, atomically (see record_offer).
+    def record_decision(r: dict) -> None:
+        side = r[body.party]
+        if side.get("decision", ProposalDecision.PENDING.value) == ProposalDecision.PENDING.value:
+            side["decision"]   = body.decision.value
+            side["decided_at"] = _now()
+
+    round_doc = cosmos_service.mutate_round(neg["id"], round_number, record_decision)
 
     cl_decision = round_doc["claimant"]["decision"]
     rs_decision = round_doc["respondent"]["decision"]
@@ -555,11 +567,14 @@ async def proposal_response(
         if waiting == "claimant"
         else CaseStatus.WAITING_FOR_RESPONDENT
     )
-    cosmos_service.transition_case(
-        body.case_id,
-        waiting_status,
-        {"current_round": round_number, "action_required_by": waiting},
-    )
+    try:
+        cosmos_service.transition_case(
+            body.case_id,
+            waiting_status,
+            {"current_round": round_number, "action_required_by": waiting},
+        )
+    except InvalidCaseState:
+        pass  # the other party's decision landed concurrently and moved the case on
     return {
         "message":       "Your decision recorded. Waiting for the other party.",
         "your_decision": body.decision.value,
@@ -792,9 +807,9 @@ async def proof_response(
     ]
 
     if round_doc:
-        round_doc["unresolved_proof_request_ids"] = [item["id"] for item in pending]
-        cosmos_service.upsert_round_in_negotiation(
-            refreshed_neg["id"], body.round_number, round_doc
+        round_doc = cosmos_service.mutate_round(
+            refreshed_neg["id"], body.round_number,
+            lambda r: r.update({"unresolved_proof_request_ids": [item["id"] for item in pending]}),
         )
 
     claimant_done   = bool((round_doc or {}).get("claimant", {}).get("submitted_at"))

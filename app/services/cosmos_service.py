@@ -3,6 +3,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from azure.core import MatchConditions
 from azure.cosmos import CosmosClient, exceptions
 from app.config import settings
 from app.models.case import CaseStatus, TERMINAL_STATES
@@ -56,6 +57,33 @@ class CosmosService:
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _mutate(self, container, item_id: str, fn, retries: int = 8) -> dict:
+        """
+        Atomic read-modify-write. `fn(doc)` mutates the document in place.
+
+        Concurrent writers (two parties submitting at once, background
+        mediation vs. a user request) would otherwise silently overwrite
+        each other. Locally the store lock is held across the read and
+        write; on Cosmos the write is conditional on the ETag and retried.
+        """
+        if self.local:
+            with self.store.lock:
+                doc = container.read_item(item=item_id, partition_key=item_id)
+                fn(doc)
+                container.replace_item(item=item_id, body=doc)
+                return doc
+        for attempt in range(retries):
+            doc = container.read_item(item=item_id, partition_key=item_id)
+            fn(doc)
+            try:
+                return container.replace_item(
+                    item=item_id, body=doc,
+                    etag=doc.get("_etag"), match_condition=MatchConditions.IfNotModified,
+                )
+            except exceptions.CosmosAccessConditionFailedError:
+                logger.info(f"ETag conflict, retrying | id={item_id} | attempt={attempt + 1}")
+        raise RuntimeError(f"Could not update {item_id}: too many concurrent writes")
+
     # ── Cases ─────────────────────────────────────────────────
 
     def create_case(self, data: dict) -> dict:
@@ -76,13 +104,17 @@ class CosmosService:
         except NOT_FOUND:
             return None
 
-    def update_case(self, case_id: str, updates: dict) -> dict:
-        case = self.get_case(case_id)
-        if not case:
+    def _mutate_case(self, case_id: str, fn) -> dict:
+        try:
+            return self._mutate(self.cases, case_id, fn)
+        except NOT_FOUND:
             raise ValueError(f"Case {case_id} not found")
-        case.update(updates)
-        case["updated_at"] = self._now()
-        self.cases.replace_item(item=case_id, body=case)
+
+    def update_case(self, case_id: str, updates: dict) -> dict:
+        def apply(case):
+            case.update(updates)
+            case["updated_at"] = self._now()
+        case = self._mutate_case(case_id, apply)
         logger.info(f"Case updated | id={case_id}")
         return case
 
@@ -90,16 +122,14 @@ class CosmosService:
                         extra_updates: dict = None) -> dict:
         """
         THE ONLY WAY to change case status in the entire app.
-        Validates the transition, sets deadline, saves to Cosmos.
+        Validates the transition against the *current* stored status
+        atomically, sets the deadline and saves.
         """
-        case = self.get_case(case_id)
-        if not case:
-            raise ValueError(f"Case {case_id} not found")
-        updated = transition(case, new_status)
-        if extra_updates:
-            updated.update(extra_updates)
-        self.cases.replace_item(item=case_id, body=updated)
-        return updated
+        def apply(case):
+            transition(case, new_status)
+            if extra_updates:
+                case.update(extra_updates)
+        return self._mutate_case(case_id, apply)
 
     def get_cases_by_email(self, email: str) -> list:
         if self.local:
@@ -183,19 +213,18 @@ class CosmosService:
         detail: str,
         metadata: Optional[dict] = None,
     ) -> dict:
-        case = self.get_case(case_id)
-        if not case:
-            raise ValueError(f"Case {case_id} not found")
-        logs = case.get("ai_reasoning_log", [])
-        logs.append({
+        entry = {
             "id": self._new_id(),
             "timestamp": self._now(),
             "stage": stage,
             "title": title,
             "detail": detail,
             "metadata": metadata or {},
-        })
-        return self.update_case(case_id, {"ai_reasoning_log": logs})
+        }
+        def apply(case):
+            case.setdefault("ai_reasoning_log", []).append(entry)
+            case["updated_at"] = self._now()
+        return self._mutate_case(case_id, apply)
 
     # ── Users ─────────────────────────────────────────────────
 
@@ -274,44 +303,59 @@ class CosmosService:
         ))
         return r[0] if r else None
 
+    def _mutate_negotiation(self, neg_id: str, fn) -> dict:
+        def apply(neg):
+            fn(neg)
+            neg["updated_at"] = self._now()
+        return self._mutate(self.negotiations, neg_id, apply)
+
     def update_negotiation(self, neg_id: str, updates: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        neg.update(updates)
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        return self._mutate_negotiation(neg_id, lambda neg: neg.update(updates))
 
     def add_round_to_negotiation(self, neg_id: str, round_data: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        neg["rounds"].append(round_data)
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        def apply(neg):
+            if not any(r["round_number"] == round_data["round_number"] for r in neg["rounds"]):
+                neg["rounds"].append(round_data)
+        return self._mutate_negotiation(neg_id, apply)
+
+    def mutate_round(self, neg_id: str, round_number: int, fn, default: dict = None) -> dict:
+        """
+        Atomically apply `fn(round)` to one round (creating it from `default`
+        if missing) and return the round as stored. Callers change only the
+        fields they own, so concurrent updates by the two parties both land.
+        """
+        result = {}
+
+        def apply(neg):
+            for r in neg["rounds"]:
+                if r["round_number"] == round_number:
+                    target = r
+                    break
+            else:
+                if default is None:
+                    raise ValueError(f"Round {round_number} not found")
+                target = dict(default)
+                neg["rounds"].append(target)
+            fn(target)
+            result["round"] = target
+
+        self._mutate_negotiation(neg_id, apply)
+        return result["round"]
 
     def update_round_in_negotiation(self, neg_id: str, round_number: int,
                                     updates: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        for i, r in enumerate(neg["rounds"]):
-            if r["round_number"] == round_number:
-                neg["rounds"][i].update(updates)
-                break
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        try:
+            self.mutate_round(neg_id, round_number, lambda r: r.update(updates))
+        except ValueError:
+            pass
+        return self.negotiations.read_item(item=neg_id, partition_key=neg_id)
 
     def upsert_round_in_negotiation(self, neg_id: str, round_number: int, round_data: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        replaced = False
-        for i, existing_round in enumerate(neg["rounds"]):
-            if existing_round["round_number"] == round_number:
-                neg["rounds"][i] = round_data
-                replaced = True
-                break
-        if not replaced:
-            neg["rounds"].append(round_data)
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        def replace(r):
+            r.clear()
+            r.update(round_data)
+        self.mutate_round(neg_id, round_number, replace, default=round_data)
+        return self.negotiations.read_item(item=neg_id, partition_key=neg_id)
 
     def get_round(self, neg_id: str, round_number: int) -> Optional[dict]:
         neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
@@ -321,28 +365,22 @@ class CosmosService:
         return None
 
     def append_proof_request(self, neg_id: str, proof_request: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        neg.setdefault("proof_requests", []).append(proof_request)
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        return self._mutate_negotiation(
+            neg_id, lambda neg: neg.setdefault("proof_requests", []).append(proof_request)
+        )
 
     def update_proof_request(self, neg_id: str, request_id: str, updates: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        for item in neg.get("proof_requests", []):
-            if item["id"] == request_id:
-                item.update(updates)
-                break
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        def apply(neg):
+            for item in neg.get("proof_requests", []):
+                if item["id"] == request_id:
+                    item.update(updates)
+                    break
+        return self._mutate_negotiation(neg_id, apply)
 
     def append_shared_note(self, neg_id: str, note: dict) -> dict:
-        neg = self.negotiations.read_item(item=neg_id, partition_key=neg_id)
-        neg.setdefault("shared_notes", []).append(note)
-        neg["updated_at"] = self._now()
-        self.negotiations.replace_item(item=neg_id, body=neg)
-        return neg
+        return self._mutate_negotiation(
+            neg_id, lambda neg: neg.setdefault("shared_notes", []).append(note)
+        )
 
     # ── Documents ─────────────────────────────────────────────
 
