@@ -1323,6 +1323,13 @@ async function loadAnalysis(caseId) {
           Send Invite to Respondent →
         </button>
       `;
+    } else if (!['SUBMITTED','ANALYZING','SETTLED','ESCALATED','AUTO_ESCALATED','ABANDONED','CRIMINAL_ADVISORY'].includes(c.status)) {
+      sendInviteBtn = `
+        <button class="btn btn-outline" style="margin-top:16px;"
+          onclick="resendInvite('${caseId}')">
+          Resend invite link to respondent
+        </button>
+      `;
     }
 
     document.getElementById('analysisContent').innerHTML = `
@@ -1521,6 +1528,15 @@ function renderCriminalAdvisory(i, l) {
       ).join('')}
     </div>
   `;
+}
+
+async function resendInvite(caseId) {
+  try {
+    const r = await axios.post(`${API}/api/cases/${caseId}/resend-invite`, {}, authHeaders());
+    alert(r.data.message);
+  } catch(e) {
+    alert(e.response?.data?.detail || 'Failed to resend invite.');
+  }
 }
 
 async function sendInvite(caseId) {

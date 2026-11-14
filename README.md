@@ -429,12 +429,13 @@ curl https://legalai-resolver.azurewebsites.net/health
 | `POST` | `/api/cases/{id}/send-invite` | Email invite to respondent | JWT |
 | `GET` | `/api/cases/{id}/timeline` | Chronological case event list | JWT |
 | `POST` | `/api/cases/{id}/confirm-payment` | Confirm payment received / report breach | JWT |
-| `GET` | `/api/respondent/case/{id}?email=X` | Filtered respondent view (no analytics) | None |
-| `POST` | `/api/respondent/accept-in-full` | Respondent accepts full amount | None |
-| `POST` | `/api/respondent/decline` | Respondent declines → auto-escalate | None |
+| `POST` | `/api/cases/{id}/resend-invite` | Re-email the respondent's signed portal link | JWT |
+| `GET` | `/api/respondent/case/{id}?email=X&t=TOKEN` | Filtered respondent view (no analytics) | Link token |
+| `POST` | `/api/respondent/accept-in-full` | Respondent accepts full amount | Link token |
+| `POST` | `/api/respondent/decline` | Respondent declines → auto-escalate | Link token |
 | `POST` | `/api/negotiation/submit-claimant-offer` | Submit claimant round offer | JWT |
-| `POST` | `/api/negotiation/submit-respondent-offer` | Submit respondent round offer | None |
-| `POST` | `/api/negotiation/proposal-response` | Accept or Reject AI proposal | Optional |
+| `POST` | `/api/negotiation/submit-respondent-offer` | Submit respondent round offer | Link token |
+| `POST` | `/api/negotiation/proposal-response` | Accept or Reject AI proposal | JWT (claimant) / link token (respondent) |
 | `GET` | `/api/negotiation/status/{id}` | Full negotiation state + round details (claimant only) | JWT |
 | `GET` | `/api/documents/{id}/all` | All available document download URLs | JWT |
 | `GET` | `/api/documents/{id}/demand-letter` | Demand letter SAS URL | JWT |
@@ -473,7 +474,11 @@ curl https://legalai-resolver.azurewebsites.net/health
 | Security headers | X-Frame-Options: DENY · HSTS · X-Content-Type-Options: nosniff |
 | Input validation | Path traversal, SQLi, XSS blocked at middleware layer |
 | Content filtering | Azure AI Content Safety — severity ≥ 4 blocked |
-| JWT auth | HS256 signed · 72-hour expiry · Bearer scheme |
+| JWT auth | HS256 signed · 72-hour expiry · Bearer scheme · strong secret enforced in production |
+| Login codes | `secrets`-generated OTP · constant-time compare · locked after 5 wrong attempts |
+| Respondent access | No account needed — every respondent action requires the HMAC token in their emailed link; the claimant can resend it |
+| File downloads | Time-limited SAS URLs (Azure) or HMAC-signed expiring links (local), re-signed on every read |
+| Criminal safety net | Violence / threats / stalking are routed to FIR advisory, never mediation — even when the LLM is unavailable |
 | Respondent privacy | Analytics, ZOPA, win probability hidden from respondent |
 | DPDP compliance | Explicit consent + disclaimer required before case submission |
 
@@ -485,7 +490,6 @@ curl https://legalai-resolver.azurewebsites.net/health
 - Settlement agreements are AI-drafted — should be reviewed by a lawyer before use in court
 - In-memory rate limiter — for multi-worker production, replace with Redis
 - PDFs lost on server restart if not using Blob Storage (ephemeral on free hosting tiers)
-- No authentication on respondent portal — verified by email address match only (a signed per-respondent invite token is the planned fix)
 - Offline (no-LLM) mode gives a rule-based baseline only — configure an LLM for case-specific reasoning
 
 ---

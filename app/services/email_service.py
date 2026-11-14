@@ -189,8 +189,14 @@ class EmailService:
         case_id: str,
         claim_amount,
         dispute_summary: str,
+        portal_url: str | None = None,
     ) -> bool:
-        portal_url = f"{settings.BASE_URL}/respond/{case_id}"
+        if not portal_url:
+            from app.core.security import respondent_token
+            portal_url = (
+                f"{settings.BASE_URL.rstrip('/')}/respond/{case_id}"
+                f"?t={respondent_token(case_id, to_email)}"
+            )
         amount_str = (
             f"Rs. {claim_amount:,.0f}" if claim_amount else "Non-monetary dispute"
         )

@@ -8,7 +8,7 @@ Offline end-to-end test of the full dispute lifecycle:
 Runs entirely on the local backends (SQLite, local disk, rule-based agents,
 email outbox).  Run with:  pytest -q
 """
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 CLAIMANT = "claimant@example.com"
 RESPONDENT = "landlord@example.com"
@@ -87,10 +87,17 @@ def test_full_dispute_lifecycle(client, login):
     r = client.post(f"/api/cases/{case_id}/send-invite", headers=claimant)
     assert r.status_code == 200, r.text
     outbox = client.get("/api/dev/outbox", params={"email": RESPONDENT}).json()["emails"]
-    assert any(f"/respond/{case_id}" in link for e in outbox for link in e["links"])
+    invite = next(link for e in outbox for link in e["links"] if f"/respond/{case_id}" in link)
+    token = parse_qs(urlparse(invite).query)["t"][0]
 
-    # ── Respondent view hides analytics / ZOPA ──
+    # ── Knowing the case ID + respondent email is no longer enough ──
     r = client.get(f"/api/respondent/case/{case_id}", params={"email": RESPONDENT})
+    assert r.status_code == 403
+    r = client.get(f"/api/respondent/case/{case_id}", params={"email": RESPONDENT, "t": "0" * 40})
+    assert r.status_code == 403
+
+    # ── Respondent view (via the emailed link) hides analytics / ZOPA ──
+    r = client.get(f"/api/respondent/case/{case_id}", params={"email": RESPONDENT, "t": token})
     assert r.status_code == 200, r.text
     assert "analytics_data" not in r.json()["case"]
     assert client.get(f"/api/cases/{case_id}/status").json()["status"] == "RESPONDENT_VIEWED"
@@ -101,8 +108,12 @@ def test_full_dispute_lifecycle(client, login):
         "explanation": "Full deposit minus a small allowance for wear and tear.",
     })
     assert r.status_code == 200, r.text
+    forged = client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 1,
+    })
+    assert forged.status_code == 403
     r = client.post("/api/negotiation/submit-respondent-offer", json={
-        "case_id": case_id, "round_number": 1, "offer_amount": 35000,
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 35000,
         "explanation": "Painting and cleaning costs were deducted.",
     })
     assert r.status_code == 200, r.text
@@ -120,13 +131,23 @@ def test_full_dispute_lifecycle(client, login):
     })
     assert r.status_code == 401
 
+    # ── ...nor as the respondent without their link token ──
+    r = client.post("/api/negotiation/proposal-response", json={
+        "case_id": case_id, "round_number": 1, "decision": "REJECT", "party": "respondent",
+    })
+    assert r.status_code == 403
+
+    # ── The claimant's proposal email must not contain the respondent's link ──
+    claimant_mail = client.get("/api/dev/outbox", params={"email": CLAIMANT}).json()["emails"]
+    assert not any(token in link for e in claimant_mail for link in e["links"])
+
     # ── Both accept → SETTLED with a downloadable agreement ──
     r = client.post("/api/negotiation/proposal-response", headers=claimant, json={
         "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant",
     })
     assert r.status_code == 200, r.text
     r = client.post("/api/respondent/proposal-response", json={
-        "case_id": case_id, "email": RESPONDENT, "decision": "ACCEPT",
+        "case_id": case_id, "email": RESPONDENT, "token": token, "decision": "ACCEPT",
     })
     assert r.status_code == 200, r.text
     assert r.json()["outcome"] == "SETTLED"
@@ -167,3 +188,24 @@ def test_criminal_dispute_never_goes_to_mediation(client, login):
     assert r.json()["status"] == "CRIMINAL_ADVISORY"
     case = client.get(f"/api/cases/{r.json()['case_id']}", headers=headers).json()
     assert case["documents_data"]["fir_advisory_url"]
+
+
+def test_resend_invite_issues_working_link(client, login):
+    claimant = login("resender@example.com")
+    r = client.post("/api/cases/submit", headers=claimant, json=_submission(
+        claimant_email="resender@example.com", respondent_email="slow-reader@example.com",
+    ))
+    case_id = r.json()["case_id"]
+    # Not allowed before the first invite
+    assert client.post(f"/api/cases/{case_id}/resend-invite", headers=claimant).status_code == 409
+    assert client.post(f"/api/cases/{case_id}/send-invite", headers=claimant).status_code == 200
+    r = client.post(f"/api/cases/{case_id}/resend-invite", headers=claimant)
+    assert r.status_code == 200, r.text
+
+    mails = client.get("/api/dev/outbox", params={"email": "slow-reader@example.com"}).json()["emails"]
+    links = [l for e in mails for l in e["links"] if f"/respond/{case_id}" in l]
+    assert len(links) >= 2
+    token = parse_qs(urlparse(links[0]).query)["t"][0]
+    r = client.get(f"/api/respondent/case/{case_id}",
+                   params={"email": "slow-reader@example.com", "t": token})
+    assert r.status_code == 200

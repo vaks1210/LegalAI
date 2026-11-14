@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from app.core.background import in_thread
 from app.config import settings
 from app.core.exceptions import CaseNotFound
+from app.core.security import verify_respondent_token
 from app.models.case import CaseStatus
 from app.models.negotiation import ProofResponseRequest, ProposalDecision, ProposalResponseRequest
 from app.services.blob_service import blob_service
@@ -26,11 +27,13 @@ logger = logging.getLogger(__name__)
 class RespondentVerify(BaseModel):
     case_id: str
     email:   str
+    token:   str = ""
 
 
 class RespondentDecision(BaseModel):
     case_id:  str
     email:    str
+    token:   str = ""
     decision: str
     reason:   str | None = None
 
@@ -38,6 +41,7 @@ class RespondentDecision(BaseModel):
 class RespondentCounterClaim(BaseModel):
     case_id:        str
     email:          str
+    token:   str = ""
     counter_claim:  str = Field(..., min_length=5, max_length=3000)
     counter_amount: float | None = None
 
@@ -45,6 +49,7 @@ class RespondentCounterClaim(BaseModel):
 class RespondentProofResponse(BaseModel):
     case_id:       str
     email:         str
+    token:   str = ""
     round_number:  int
     request_id:    str
     response_text: str = Field(..., min_length=5, max_length=3000)
@@ -54,6 +59,7 @@ class RespondentProofResponse(BaseModel):
 class RespondentEvidenceUpload(BaseModel):
     case_id:      str
     email:        str
+    token:   str = ""
     filename:     str
     content_type: str = "application/octet-stream"
     base64_data:  str
@@ -63,13 +69,21 @@ class RespondentEvidenceUpload(BaseModel):
 # HELPER
 # ─────────────────────────────────────────────────────────────
 
-def _verify_respondent(case_id: str, email: str) -> dict:
-    """Load case and verify the email belongs to the respondent."""
+INVALID_LINK = (
+    "This link is invalid or incomplete. Open the portal from the link in your "
+    "latest email, or ask the claimant to resend the invite."
+)
+
+
+def _verify_respondent(case_id: str, email: str, token: str | None) -> dict:
+    """Load case and verify the caller is the respondent (email + signed link token)."""
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["respondent_email"].lower() != email.lower():
+    if case["respondent_email"].lower() != (email or "").strip().lower():
         raise HTTPException(status_code=403, detail="Email does not match case records.")
+    if not verify_respondent_token(case_id, case["respondent_email"], token):
+        raise HTTPException(status_code=403, detail=INVALID_LINK)
     return case
 
 
@@ -78,14 +92,14 @@ def _verify_respondent(case_id: str, email: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/case/{case_id}")
-async def get_respondent_case(case_id: str, email: str):
+async def get_respondent_case(case_id: str, email: str, t: str = ""):
     """
     Filtered case view for respondent — analytics/ZOPA always hidden.
 
     EMAIL: None (view only — no email triggered here).
     SIDE EFFECT: Transitions INVITE_SENT → RESPONDENT_VIEWED on first open.
     """
-    case = _verify_respondent(case_id, email)
+    case = _verify_respondent(case_id, email, t)
 
     if case["status"] == CaseStatus.INVITE_SENT.value:
         cosmos_service.transition_case(case_id, CaseStatus.RESPONDENT_VIEWED)
@@ -157,7 +171,7 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
 
     EMAIL: Handled by _handle_settlement (settlement confirmation to both parties).
     """
-    case = _verify_respondent(body.case_id, body.email)
+    case = _verify_respondent(body.case_id, body.email, body.token)
 
     valid = {
         CaseStatus.INVITE_SENT.value,
@@ -237,7 +251,7 @@ async def dispute_facts(body: RespondentCounterClaim):
     Included in the case file; visible to both parties in negotiation.
     No email triggered.
     """
-    _verify_respondent(body.case_id, body.email)
+    _verify_respondent(body.case_id, body.email, body.token)
     cosmos_service.update_case(body.case_id, {
         "respondent_version":        body.counter_claim,
         "respondent_version_at":     datetime.now(timezone.utc).isoformat(),
@@ -258,7 +272,7 @@ async def decline_participation(body: RespondentVerify, background_tasks: Backgr
 
     EMAIL: Claimant receives escalation notice with court file.
     """
-    case = _verify_respondent(body.case_id, body.email)
+    case = _verify_respondent(body.case_id, body.email, body.token)
 
     cosmos_service.update_case(body.case_id, {
         "respondent_declined":    True,
@@ -330,7 +344,7 @@ async def respondent_proposal_response(body: RespondentDecision, background_task
     Respondent accepts or rejects the AI proposal.
     Delegates to the shared proposal_response handler in negotiation router.
     """
-    case = _verify_respondent(body.case_id, body.email)
+    case = _verify_respondent(body.case_id, body.email, body.token)
 
     try:
         decision = ProposalDecision(body.decision)
@@ -345,6 +359,7 @@ async def respondent_proposal_response(body: RespondentDecision, background_task
         decision=decision,
         party="respondent",
         reason=body.reason,
+        respondent_token=body.token,
     )
     return await proposal_response(request, background_tasks, current_user=None)
 
@@ -356,7 +371,7 @@ async def respondent_proposal_response(body: RespondentDecision, background_task
 @router.post("/proof-response")
 async def respondent_proof_response(body: RespondentProofResponse):
     """Respondent responds to a proof request from the claimant."""
-    _verify_respondent(body.case_id, body.email)
+    _verify_respondent(body.case_id, body.email, body.token)
 
     from app.routers.negotiation import proof_response
 
@@ -364,6 +379,7 @@ async def respondent_proof_response(body: RespondentProofResponse):
         case_id=body.case_id,
         round_number=body.round_number,
         party="respondent",
+        respondent_token=body.token,
         request_id=body.request_id,
         response_text=body.response_text,
         file_refs=body.file_refs,
@@ -379,7 +395,7 @@ async def respondent_proof_response(body: RespondentProofResponse):
 async def respondent_evidence_upload(body: RespondentEvidenceUpload):
     """Respondent uploads evidence files (base64 encoded)."""
     import base64
-    case = _verify_respondent(body.case_id, body.email)
+    case = _verify_respondent(body.case_id, body.email, body.token)
 
     allowed = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx", ".txt"}
     original_name = body.filename or "respondent_evidence.bin"

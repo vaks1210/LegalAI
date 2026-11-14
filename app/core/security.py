@@ -67,3 +67,31 @@ def validate_security_settings() -> None:
         )
     if secret == "changeme":
         logger.warning("JWT_SECRET_KEY is the insecure default — fine for local dev only.")
+
+
+# ── Respondent access tokens ─────────────────────────────────
+# The respondent has no account. Their portal link carries an HMAC token bound
+# to the case and their email, so knowing the case ID and the respondent's
+# email address is no longer enough to act on their behalf.
+
+def respondent_token(case_id: str, email: str) -> str:
+    import hashlib
+    import hmac
+    msg = f"respondent|{case_id}|{(email or '').strip().lower()}".encode()
+    return hmac.new(settings.JWT_SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()[:40]
+
+
+def verify_respondent_token(case_id: str, email: str, token: str | None) -> bool:
+    import hmac
+    if not token:
+        return False
+    return hmac.compare_digest(respondent_token(case_id, email), token.strip())
+
+
+def respondent_portal_url(case: dict) -> str:
+    token = respondent_token(case["id"], case["respondent_email"])
+    return f"{settings.BASE_URL.rstrip('/')}/respond/{case['id']}?t={token}"
+
+
+def claimant_portal_url() -> str:
+    return settings.BASE_URL.rstrip("/")

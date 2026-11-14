@@ -283,6 +283,43 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
     return {"message": f"Invite sent to {case['respondent_email']}", "status": "INVITE_SENT"}
 
 
+@router.post("/{case_id}/resend-invite")
+async def resend_invite(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Re-sends the respondent's portal link (with their signed access token)
+    while the case is active — e.g. the email was lost, or the case predates
+    signed links. Does not change case status.
+    """
+    from app.models.case import TERMINAL_STATES
+
+    case = cosmos_service.get_case(case_id)
+    if not case:
+        raise CaseNotFound(case_id)
+    if case["claimant_email"].lower() != current_user["email"].lower():
+        raise UnauthorizedAccess()
+    status = CaseStatus(case["status"])
+    if status in TERMINAL_STATES or status in (
+        CaseStatus.SUBMITTED, CaseStatus.ANALYZING, CaseStatus.ANALYZED,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invite can only be resent after it was first sent and while the case is active. Current: {case['status']}",
+        )
+
+    sent = email_service.send_case_invite(
+        to_email=case["respondent_email"],
+        respondent_name=case["respondent_name"],
+        claimant_name=case["claimant_name"],
+        case_id=case_id,
+        claim_amount=case.get("claim_amount"),
+        dispute_summary=case["dispute_text"],
+    )
+    if not sent:
+        raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
+    logger.info(f"Invite resent | case_id={case_id}")
+    return {"message": f"Invite link resent to {case['respondent_email']}"}
+
+
 # ─────────────────────────────────────────────────────────────
 # EVIDENCE UPLOAD
 # ─────────────────────────────────────────────────────────────

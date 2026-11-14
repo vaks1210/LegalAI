@@ -94,6 +94,8 @@ class SubmitOfferRequest(BaseModel):
     proof_note: Optional[str] = Field(default=None, max_length=2000)
     requested_proof: list[str] = []
     conditions: list[str] = []
+    # Required when the respondent submits (from their signed portal link).
+    respondent_token: Optional[str] = None
 
 
 class ProposalResponseRequest(BaseModel):
@@ -102,12 +104,14 @@ class ProposalResponseRequest(BaseModel):
     decision: ProposalDecision
     party: str
     reason: Optional[str] = Field(default=None, max_length=1000)
+    respondent_token: Optional[str] = None
 
 
 class ProofResponseRequest(BaseModel):
     case_id: str
     round_number: int
     party: str
+    respondent_token: Optional[str] = None
     request_id: str
     response_text: str = Field(..., min_length=5, max_length=3000)
     file_refs: list[str] = []

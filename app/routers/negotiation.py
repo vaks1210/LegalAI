@@ -8,6 +8,7 @@ from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, UnauthorizedAccess
+from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
 from app.models.negotiation import (
     OfferType,
@@ -36,8 +37,19 @@ def _new_id(prefix: str = "id") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def _portal_url(case_id: str) -> str:
-    return f"{settings.BASE_URL}/respond/{case_id}"
+def _portal_url(case: dict, party: str = "respondent") -> str:
+    """Each party gets their own link; only the respondent's carries their token."""
+    if party == "claimant":
+        return claimant_portal_url()
+    return respondent_portal_url(case)
+
+
+def _require_respondent(case: dict, token: str | None) -> None:
+    if not verify_respondent_token(case["id"], case["respondent_email"], token):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid respondent link. Open the portal from the link in your latest email.",
+        )
 
 
 def _build_insights(case: dict) -> dict:
@@ -236,7 +248,7 @@ async def _handle_offer_submission(
                 "Please login to the respondent portal and submit your offer so the "
                 "AI mediator can generate a settlement proposal."
             ),
-            portal_url=_portal_url(case["id"]),
+            portal_url=_portal_url(case),
             action_label="Submit Your Offer",
         )
     else:
@@ -310,10 +322,11 @@ async def submit_respondent_offer(
     body: SubmitOfferRequest,
     background_tasks: BackgroundTasks,
 ):
-    """No auth — respondent is verified by case email in the respondent router."""
+    """Respondent has no account — authorised by the signed token in their portal link."""
     case = cosmos_service.get_case(body.case_id)
     if not case:
         raise CaseNotFound(body.case_id)
+    _require_respondent(case, body.respondent_token)
 
     valid_states = {
         CaseStatus.INVITE_SENT.value,
@@ -397,12 +410,11 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
 
         proposed_amount = proposal.get("proposed_amount") or 0
         reasoning       = proposal.get("reasoning") or ""
-        portal          = _portal_url(case_id)
 
         # EMAIL both parties with the proposal
-        for to_email, party_name in [
-            (case["claimant_email"],   case["claimant_name"]),
-            (case["respondent_email"], case["respondent_name"]),
+        for to_email, party_name, portal in [
+            (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
+            (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
         ]:
             email_service.send_proposal(
                 to_email=to_email,
@@ -469,6 +481,8 @@ async def proposal_response(
             raise HTTPException(status_code=401, detail="Login required to respond as claimant.")
         if current_user["email"].lower() != case["claimant_email"].lower():
             raise UnauthorizedAccess()
+    elif body.party == "respondent":
+        _require_respondent(case, body.respondent_token)
 
     neg = cosmos_service.get_negotiation_by_case(body.case_id)
     if not neg:
@@ -690,12 +704,11 @@ async def _start_next_round(case_id: str, next_round_number: int):
             {"current_round": next_round_number, "action_required_by": None},
         )
 
-        portal = _portal_url(case_id)
 
         # EMAIL both parties
-        for to_email, party_name in [
-            (case["claimant_email"],   case["claimant_name"]),
-            (case["respondent_email"], case["respondent_name"]),
+        for to_email, party_name, portal in [
+            (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
+            (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
         ]:
             email_service.send_next_round_invite(
                 to_email=to_email,
@@ -726,9 +739,11 @@ async def proof_response(
         raise CaseNotFound(body.case_id)
 
     if body.party == "claimant":
-        if not current_user or current_user["email"] != case["claimant_email"]:
+        if not current_user or current_user["email"].lower() != case["claimant_email"].lower():
             raise UnauthorizedAccess()
-    elif body.party != "respondent":
+    elif body.party == "respondent":
+        _require_respondent(case, body.respondent_token)
+    else:
         raise HTTPException(status_code=400, detail="party must be 'claimant' or 'respondent'")
 
     neg = cosmos_service.get_negotiation_by_case(body.case_id)

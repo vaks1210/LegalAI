@@ -230,6 +230,14 @@
 <script>
 const API     = '';
 const caseId  = window.location.pathname.split('/respond/')[1]?.split('/')[0];
+// Signed access token from the emailed link (?t=...). Kept for this tab only.
+const respondentToken = (() => {
+  const t = new URLSearchParams(window.location.search).get('t');
+  try {
+    if (t) sessionStorage.setItem(`legalai_rt_${caseId}`, t);
+    return t || sessionStorage.getItem(`legalai_rt_${caseId}`) || '';
+  } catch (_) { return t || ''; }
+})();
 let respondentEmail = '';
 let caseData  = null;
 
@@ -255,7 +263,7 @@ async function verifyEmail() {
 
   try {
     const r = await axios.get(
-      `${API}/api/respondent/case/${caseId}?email=${encodeURIComponent(email)}`
+      `${API}/api/respondent/case/${caseId}?email=${encodeURIComponent(email)}&t=${encodeURIComponent(respondentToken)}`
     );
     respondentEmail = email;
     caseData        = r.data;
@@ -639,6 +647,7 @@ async function submitOffer() {
   try {
     await axios.post(`${API}/api/negotiation/submit-respondent-offer`, {
       case_id:      caseId,
+      respondent_token: respondentToken,
       round_number: roundNum,
       offer_amount: Number(amt),
       explanation: explanation,
@@ -660,7 +669,7 @@ async function acceptInFull() {
   if (!confirm('Are you sure you want to accept the full claimed amount?')) return;
   try {
     await axios.post(`${API}/api/respondent/accept-in-full`, {
-      case_id: caseId, email: respondentEmail
+      case_id: caseId, email: respondentEmail, token: respondentToken
     });
     showSuccess('Accepted', 'You have accepted the full amount. A settlement agreement will be generated and emailed to both parties.');
   } catch(e) {
@@ -671,7 +680,7 @@ async function acceptInFull() {
 async function submitDecision(decision) {
   try {
     const response = await axios.post(`${API}/api/respondent/proposal-response`, {
-      case_id: caseId, email: respondentEmail, decision,
+      case_id: caseId, email: respondentEmail, token: respondentToken, decision,
       reason: decision === 'REJECT' ? prompt('Optional: why are you rejecting? Mention missing proof if relevant.') || '' : ''
     });
     if (response.data?.outcome === 'SETTLED' || response.data?.status === 'SETTLED') {
@@ -705,7 +714,7 @@ async function submitDecision(decision) {
 
 async function refreshRespondentCase() {
   const r = await axios.get(
-    `${API}/api/respondent/case/${caseId}?email=${encodeURIComponent(respondentEmail)}`
+    `${API}/api/respondent/case/${caseId}?email=${encodeURIComponent(respondentEmail)}&t=${encodeURIComponent(respondentToken)}`
   );
   caseData = r.data;
   renderCase();
@@ -717,7 +726,7 @@ async function disputeFacts() {
   if (!version) return alert('Please describe your version of events.');
   try {
     await axios.post(`${API}/api/respondent/dispute-facts`, {
-      case_id: caseId, email: respondentEmail, counter_claim: version
+      case_id: caseId, email: respondentEmail, token: respondentToken, counter_claim: version
     });
     const el = document.getElementById('actionMsg');
     el.className = 'alert alert-success';
@@ -734,7 +743,7 @@ async function submitProofResponse(requestId, roundNumber) {
   try {
     await axios.post(`${API}/api/respondent/proof-response`, {
       case_id: caseId,
-      email: respondentEmail,
+      email: respondentEmail, token: respondentToken,
       round_number: roundNumber,
       request_id: requestId,
       response_text: text
@@ -757,7 +766,7 @@ async function uploadRespondentEvidence(file) {
     const base64Data = await toBase64(file);
     const r = await axios.post(`${API}/api/respondent/evidence-upload`, {
       case_id: caseId,
-      email: respondentEmail,
+      email: respondentEmail, token: respondentToken,
       filename: file.name,
       content_type: file.type || 'application/octet-stream',
       base64_data: base64Data,
@@ -773,7 +782,7 @@ async function decline() {
   if (!confirm('Are you sure? Non-participation will be noted in the court file as evidence of bad faith.')) return;
   try {
     await axios.post(`${API}/api/respondent/decline`, {
-      case_id: caseId, email: respondentEmail
+      case_id: caseId, email: respondentEmail, token: respondentToken
     });
     showSuccess('Declined', 'Your decision has been recorded. The claimant has been notified and a court-ready case file has been generated noting your non-participation.');
   } catch(e) {
