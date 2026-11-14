@@ -93,3 +93,26 @@ def test_upload_rejects_bad_type_and_oversize(client, login):
     r = client.post(f"/api/cases/{case_id}/evidence-upload", headers=headers,
                     files={"file": ("big.pdf", b"0" * (MAX_UPLOAD_BYTES + 1), "application/pdf")})
     assert r.status_code == 413
+
+
+XSS = 'Deposit not returned <img src=x onerror="alert(1)"> and <b>unclosed tag, plus Rs 5,000 & interest?'
+
+
+def test_markup_in_dispute_is_escaped_in_email_and_does_not_break_pdfs(client, login):
+    from tests.test_e2e_local import DISPUTE, _submission
+    headers = login("markup@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="markup@example.com", respondent_email="markup-resp@example.com",
+        claimant_name="Asha <script>x</script>", dispute_text=XSS + " " + DISPUTE,
+    ))
+    case_id = r.json()["case_id"]
+    case = client.get(f"/api/cases/{case_id}", headers=headers).json()
+    # PDF generation used to crash on unbalanced markup in user text.
+    assert case["documents_data"]["demand_letter_url"]
+    assert not case.get("document_agent_error")
+
+    assert client.post(f"/api/cases/{case_id}/send-invite", headers=headers).status_code == 200
+    from app.services.email_service import email_service
+    invite = email_service.list_outbox("markup-resp@example.com")[0]["html"]
+    assert "<img src=x" not in invite and "&lt;img" in invite
+    assert "<script>" not in invite

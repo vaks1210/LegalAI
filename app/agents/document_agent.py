@@ -1,4 +1,5 @@
 import io
+from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
 import logging
 from datetime import datetime, timezone
 from reportlab.lib.pagesizes import A4
@@ -165,8 +166,12 @@ def _safe(text: str) -> str:
     }
     for char, replacement in replacements.items():
         text = text.replace(char, replacement)
-    # Remove any remaining non-ASCII
-    return text.encode("ascii", errors="replace").decode("ascii").replace("?", " ")
+    # Replace any remaining non-ASCII (previously done via "?" substitution,
+    # which also erased genuine question marks).
+    text = "".join(c if ord(c) < 128 else " " for c in text)
+    # ReportLab Paragraph parses its input as markup: user text containing
+    # "<" or "&" could break or inject formatting, crashing PDF generation.
+    return xml_escape(text)
 
 
 def _today() -> str:
@@ -633,7 +638,7 @@ Relief available: {legal.get('relief_available', [])}
         ev_data = [["Evidence Item", "Available", "Importance"]]
         for item in ev_list:
             ev_data.append([
-                _safe(item.get("item", "")),
+                xml_unescape(_safe(item.get("item", ""))),  # plain table cell, not markup
                 "YES" if item.get("available") else "NO",
                 item.get("importance", ""),
             ])

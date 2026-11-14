@@ -1,3 +1,6 @@
+import functools
+import html
+import inspect
 import json
 import logging
 import os
@@ -13,6 +16,23 @@ logger = logging.getLogger(__name__)
 
 SENDGRID_API_URL = "https://api.sendgrid.com/v3/mail/send"
 SENDGRID_TIMEOUT_SECONDS = 30
+
+
+def _escape_fields(*names):
+    """HTML-escape the named (user-supplied) arguments before templating."""
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            bound = sig.bind(*args, **kwargs)
+            for n in names:
+                v = bound.arguments.get(n)
+                if isinstance(v, str):
+                    bound.arguments[n] = html.escape(v)
+            return fn(*bound.args, **bound.kwargs)
+        return wrapper
+    return deco
 
 
 class EmailService:
@@ -113,6 +133,7 @@ class EmailService:
             )
             return False
 
+    @_escape_fields('party_name', 'summary')
     def send_case_update(
         self,
         to_email: str,
@@ -153,6 +174,7 @@ class EmailService:
         """
         return self.send(to_email, f"{headline} - Case #{short_id}", html)
 
+    @_escape_fields('display_name')
     def send_otp(self, to_email: str, otp: str, display_name: str = "") -> bool:
         name = display_name or to_email
         html = f"""
@@ -181,6 +203,7 @@ class EmailService:
         """
         return self.send(to_email, "Your LegalAI Login Code", html)
 
+    @_escape_fields('respondent_name', 'claimant_name', 'dispute_summary')
     def send_case_invite(
         self,
         to_email: str,
@@ -269,6 +292,7 @@ class EmailService:
             html,
         )
 
+    @_escape_fields('party_name', 'reasoning')
     def send_proposal(
         self,
         to_email: str,
@@ -322,6 +346,7 @@ class EmailService:
             html,
         )
 
+    @_escape_fields('party_name')
     def send_settlement_confirmation(
         self,
         to_email: str,
@@ -368,6 +393,7 @@ class EmailService:
             html,
         )
 
+    @_escape_fields('party_name')
     def send_escalation_notice(
         self,
         to_email: str,
@@ -402,6 +428,7 @@ class EmailService:
             html,
         )
 
+    @_escape_fields('party_name')
     def send_next_round_invite(
         self,
         to_email: str,
@@ -437,6 +464,7 @@ class EmailService:
             html,
         )
 
+    @_escape_fields('claimant_name')
     def send_respondent_offer_notification(
         self,
         to_email: str,

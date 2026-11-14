@@ -1,3 +1,4 @@
+import html
 import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -103,9 +104,9 @@ async def _expire_invite_sent(case_id: str, case: dict):
         html_body=f"""
         <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
             <h3 style="color:#D97706;">LegalAI Resolver — Case Update</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
+            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
             <p style="color:#E2E8F0;">
-                <b>{case['respondent_name']}</b> did not respond to the mediation
+                <b>{html.escape(case['respondent_name'])}</b> did not respond to the mediation
                 invite within 7 days. Your case has been automatically escalated.
             </p>
             <p style="color:#E2E8F0;">
@@ -140,9 +141,9 @@ async def _expire_respondent_viewed(case_id: str, case: dict):
         html_body=f"""
         <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
             <h3 style="color:#D97706;">LegalAI Resolver — Case Update</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
+            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
             <p style="color:#E2E8F0;">
-                <b>{case['respondent_name']}</b> viewed your case but did not
+                <b>{html.escape(case['respondent_name'])}</b> viewed your case but did not
                 submit a response within 5 days. Your case has been escalated.
                 Their deliberate non-engagement is documented in the court file.
             </p>
@@ -260,10 +261,10 @@ async def _expire_settling(case_id: str, case: dict):
         html_body=f"""
         <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
             <h3 style="color:#DC2626;">Payment Deadline Passed</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
+            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
             <p style="color:#E2E8F0;">
                 The payment deadline of 14 days has passed.
-                <b>{case['respondent_name']}</b> has not made the agreed payment
+                <b>{html.escape(case['respondent_name'])}</b> has not made the agreed payment
                 of <b>Rs. {settled_amount:,.0f}</b>.
             </p>
             <p style="color:#E2E8F0;">
