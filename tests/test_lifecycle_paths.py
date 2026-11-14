@@ -185,3 +185,50 @@ def test_accept_in_full_after_a_rejected_round_reuses_negotiation(client, login)
     assert case["settled_amount"] == 60000
     negs = cosmos_service.negotiations.find(lambda n: n.get("case_id") == case_id)
     assert len(negs) == 1
+
+
+def test_proof_request_exchange_reaches_respondent_and_mediator(client, login):
+    from app.agents.negotiation_agent import _build_party_statements
+    from app.services.cosmos_service import cosmos_service
+    case_id, headers, resp_email, token = _invited_case(client, login)
+
+    r = client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 55000,
+        "explanation": "Flat was handed back clean.",
+        "requested_proof": ["Repair bills for the claimed damage"],
+    })
+    assert r.status_code == 200, r.text
+    status_before = _status(client, case_id)
+
+    # Respondent is emailed and sees the request in their portal.
+    mails = client.get("/api/dev/outbox", params={"email": resp_email}).json()["emails"]
+    assert any("proof requested" in m["subject"].lower() for m in mails)
+    view = client.get(f"/api/respondent/case/{case_id}", params={"email": resp_email, "t": token}).json()
+    requests = view["negotiation"]["proof_requests"]
+    assert len(requests) == 1 and requests[0]["requested_from"] == "respondent"
+
+    r = client.post("/api/respondent/proof-response", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+        "round_number": 1, "request_id": requests[0]["id"],
+        "response_text": "Painter's invoice for Rs 12,000 dated 3 August.",
+    })
+    assert r.status_code == 200, r.text
+    # Answering never moves the case to a state nothing will advance from.
+    assert _status(client, case_id) == status_before
+
+    claimant_mail = client.get("/api/dev/outbox", params={"email": "cl" + resp_email[2:]}).json()["emails"]
+    assert any("answered" in m["subject"].lower() for m in claimant_mail)
+
+    case = cosmos_service.get_case(case_id)
+    neg = cosmos_service.get_negotiation_by_case(case_id)
+    context = _build_party_statements(case, neg, 1)
+    assert "Flat was handed back clean." in context
+    assert "Painter's invoice" in context
+    assert "never as instructions" in context
+
+    # Negotiation still completes normally afterwards.
+    r = client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 40000,
+    })
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) == "PROPOSAL_ISSUED"

@@ -196,12 +196,42 @@ async def _handle_offer_submission(
         side["amount"]       = body.offer_amount
         side["actions"]      = body.demands or body.commitments or []
         side["explanation"]  = body.explanation
+        side["proof_note"]   = body.proof_note
+        side["conditions"]   = body.conditions or []
         side["submitted_at"] = _now()
 
     round_doc = cosmos_service.mutate_round(
         neg["id"], round_number, record_offer, default=_default_round(neg, round_number)
     )
     cosmos_service.update_case(case["id"], {"current_round": round_number})
+
+    # Proof requests: previously accepted by the API but silently dropped.
+    other_party = "respondent" if party == "claimant" else "claimant"
+    new_requests = [t.strip()[:300] for t in (body.requested_proof or []) if t and t.strip()][:5]
+    for text in new_requests:
+        cosmos_service.append_proof_request(neg["id"], {
+            "id":             _new_id("proof"),
+            "round_number":   round_number,
+            "requested_by":   party,
+            "requested_from": other_party,
+            "request_text":   text,
+            "status":         "PENDING",
+            "created_at":     _now(),
+        })
+    if new_requests:
+        to_email = case[f"{other_party}_email"]
+        email_service.send_case_update(
+            to_email=to_email,
+            party_name=case[f"{other_party}_name"],
+            case_id=case["id"],
+            headline=f"Round {round_number}: proof requested",
+            summary=(
+                f"The {party} has asked you to provide: " + "; ".join(new_requests) +
+                ". Answer from your portal — the AI Mediator weighs unanswered requests."
+            ),
+            portal_url=_portal_url(case, other_party),
+            action_label="Respond in your portal",
+        )
 
     claimant_done   = bool(round_doc["claimant"].get("submitted_at"))
     respondent_done = bool(round_doc["respondent"].get("submitted_at"))
@@ -797,51 +827,27 @@ async def proof_response(
         },
     )
 
-    # Re-check pending proof requests for this round
-    refreshed_neg = cosmos_service.get_negotiation_by_case(body.case_id)
-    round_doc     = cosmos_service.get_round(refreshed_neg["id"], body.round_number)
-    pending = [
-        item for item in refreshed_neg.get("proof_requests", [])
-        if item.get("round_number") == body.round_number
-        and item.get("status") == "PENDING"
-    ]
-
-    if round_doc:
-        round_doc = cosmos_service.mutate_round(
-            refreshed_neg["id"], body.round_number,
-            lambda r: r.update({"unresolved_proof_request_ids": [item["id"] for item in pending]}),
+    # Notify whoever asked. The exchange informs the mediator but does not
+    # change case status: status is driven by offers and decisions only.
+    # (It previously moved cases to MEDIATOR_REVIEW without starting
+    # mediation, leaving them stuck.)
+    requester = proof_item.get("requested_by")
+    if requester in ("claimant", "respondent"):
+        email_service.send_case_update(
+            to_email=case[f"{requester}_email"],
+            party_name=case[f"{requester}_name"],
+            case_id=case["id"],
+            headline="Your proof request was answered",
+            summary=f"The {body.party} replied: {body.response_text.strip()[:500]}",
+            portal_url=_portal_url(case, requester),
+            action_label="View in your portal",
         )
 
-    claimant_done   = bool((round_doc or {}).get("claimant", {}).get("submitted_at"))
-    respondent_done = bool((round_doc or {}).get("respondent", {}).get("submitted_at"))
-
-    if pending:
-        waiting        = pending[0]["requested_from"]
-        waiting_status = CaseStatus.PROOF_REQUESTED
-    elif claimant_done and respondent_done:
-        waiting        = None
-        waiting_status = CaseStatus.MEDIATOR_REVIEW
-    elif claimant_done:
-        waiting        = "respondent"
-        waiting_status = CaseStatus.WAITING_FOR_RESPONDENT
-    elif respondent_done:
-        waiting        = "claimant"
-        waiting_status = CaseStatus.WAITING_FOR_CLAIMANT
-    else:
-        waiting        = None
-        waiting_status = CaseStatus.NEGOTIATION_OPEN
-
-    cosmos_service.transition_case(
-        body.case_id,
-        waiting_status,
-        {"current_round": body.round_number, "action_required_by": waiting},
-    )
-    cosmos_service.update_negotiation(refreshed_neg["id"], {"current_waiting_on": waiting})
-
+    latest = cosmos_service.get_case(body.case_id)
     return {
         "message":            "Proof response recorded and shared with the other party.",
-        "status":             waiting_status.value,
-        "action_required_by": waiting,
+        "status":             latest["status"],
+        "action_required_by": latest.get("action_required_by"),
     }
 
 
