@@ -188,16 +188,22 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
     settled_amount = case.get("claim_amount", 0) or 0
     now = datetime.now(timezone.utc).isoformat()
 
-    # Create negotiation + round 1 with full acceptance
-    neg = cosmos_service.create_negotiation(body.case_id, {
-        "offer_type":       "monetary",
-        "full_acceptance":  True,
-        "proof_requests":   [],
-        "shared_notes":     [],
-        "current_waiting_on": None,
-    })
-    cosmos_service.add_round_to_negotiation(neg["id"], {
-        "round_number":                1,
+    # Reuse the case's negotiation if offers were already exchanged —
+    # creating a second one left it invisible to the rest of the system.
+    neg = cosmos_service.get_negotiation_by_case(body.case_id)
+    if neg:
+        cosmos_service.update_negotiation(neg["id"], {"full_acceptance": True, "current_waiting_on": None})
+    else:
+        neg = cosmos_service.create_negotiation(body.case_id, {
+            "offer_type":       "monetary",
+            "full_acceptance":  True,
+            "proof_requests":   [],
+            "shared_notes":     [],
+            "current_waiting_on": None,
+        })
+    round_number = case.get("current_round") or 1
+    cosmos_service.upsert_round_in_negotiation(neg["id"], round_number, {
+        "round_number":                round_number,
         "offer_type":                  "monetary",
         "claimant": {
             "amount": settled_amount, "actions": [], "explanation": None,
@@ -217,7 +223,7 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
         "unresolved_proof_request_ids": [],
     })
     cosmos_service.update_case(body.case_id, {
-        "current_round":  1,
+        "current_round":  round_number,
         "negotiation_id": neg["id"],
         "action_required_by": None,
     })

@@ -128,3 +128,60 @@ def test_silent_next_round_escalates_after_deadline(client, login):
     _expire_now(case_id)
     _run_expiry()
     assert _status(client, case_id) == "ESCALATED"
+
+
+def test_respondent_accepts_in_full_settles_case(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    r = client.post("/api/respondent/accept-in-full", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+    })
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) == "SETTLED"
+    r = client.get(f"/api/documents/{case_id}/settlement", headers=headers)
+    assert r.status_code == 200, r.text
+
+
+def test_respondent_declines_escalates_with_court_file(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.get(f"/api/respondent/case/{case_id}", params={"email": resp_email, "t": token})
+    r = client.post("/api/respondent/decline", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+    })
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) in ("AUTO_ESCALATED", "ESCALATED")
+    docs = client.get(f"/api/documents/{case_id}/all", headers=headers).json()["documents"]
+    assert docs["court_file"]
+
+
+def test_respondent_can_dispute_facts(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    r = client.post("/api/respondent/dispute-facts", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+        "counter_claim": "The flat was left with damaged walls; repainting cost Rs 15,000.",
+        "counter_amount": 15000,
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_strategy_works_offline(client, login):
+    case_id, headers, *_ = _invited_case(client, login)
+    r = client.post(f"/api/cases/{case_id}/strategy", headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()
+
+
+def test_accept_in_full_after_a_rejected_round_reuses_negotiation(client, login):
+    from app.services.cosmos_service import cosmos_service
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    _play_round(client, case_id, headers, resp_email, token, 1)
+    assert _status(client, case_id) == "NEGOTIATION_OPEN"
+
+    r = client.post("/api/respondent/accept-in-full", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+    })
+    assert r.status_code == 200, r.text
+    case = cosmos_service.get_case(case_id)
+    assert case["status"] == "SETTLED"
+    assert case["settled_amount"] == 60000
+    negs = cosmos_service.negotiations.find(lambda n: n.get("case_id") == case_id)
+    assert len(negs) == 1

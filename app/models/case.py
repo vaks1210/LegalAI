@@ -51,6 +51,7 @@ VALID_TRANSITIONS = {
         CaseStatus.PROOF_RESPONSE_PENDING,
         CaseStatus.MEDIATOR_REVIEW,
         CaseStatus.SETTLEMENT_PENDING_CONFIRMATION,
+        CaseStatus.SETTLING,        # respondent accepts the full claim
         CaseStatus.ESCALATING,      # deadline passed with no offers (expiry worker)
         CaseStatus.AUTO_ESCALATED,
     ],
