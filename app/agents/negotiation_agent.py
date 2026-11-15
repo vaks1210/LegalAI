@@ -654,6 +654,8 @@ def _post_process(
         proposed = _clamp_to_offers(proposed, claimant_offer, respondent_offer)
         result["proposed_amount"] = round(proposed, 2)
 
+    if not isinstance(result.get("reasoning"), str):
+        result["reasoning"] = ""
     # The reasoning is shown to both parties. If the model leaked a
     # confidential bound (other than the proposed figure itself), replace it.
     if track != "non_monetary" and _reveals_zopa(result.get("reasoning", ""), analytics, result.get("proposed_amount")):

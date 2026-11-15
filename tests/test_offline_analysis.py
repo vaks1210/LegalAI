@@ -137,3 +137,13 @@ def test_llm_reasoning_that_leaks_zopa_is_replaced():
     out = _post_process({"proposed_amount": 42000, "reasoning": fine}, CASE, ANALYTICS, 1,
                         "monetary_civil", {}, claimant_offer=55000, respondent_offer=30000)
     assert out["reasoning"] == fine  # the proposal itself may equal the optimum
+
+
+def test_to_number_parses_llm_style_values():
+    from app.core.coerce import to_number
+    assert to_number("Rs. 30,000") == 30000
+    assert to_number("70%") == 70
+    assert to_number("about 50k") == 50000
+    assert to_number("2.5 lakh") == 250000
+    assert to_number(12) == 12
+    assert to_number("lots") is None and to_number(None, 7) == 7 and to_number(True) is None

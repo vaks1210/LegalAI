@@ -1,5 +1,6 @@
 import logging
 from app.services.openai_service import openai_service
+from app.core.coerce import to_number
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +454,7 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Analytics Agent failed: {e}")
+        logger.error(f"Analytics Agent failed: {e}", exc_info=True)
         return _fallback_analytics(case, track, intake_data, legal_data)
 
 
@@ -534,27 +535,28 @@ def _post_process(
     """Validate, clamp, and ensure all ZOPA fields are correct numbers."""
 
     # Clamp win_probability 0–90
-    wp = result.get("win_probability")
-    if wp is not None:
-        try:
-            result["win_probability"] = max(0, min(90, int(wp)))
-        except (TypeError, ValueError):
-            result["win_probability"] = 50
+    wp = to_number(result.get("win_probability"))
+    result["win_probability"] = max(0, min(90, int(wp))) if wp is not None else 50
+    for field in ("court_cost_estimate", "time_to_resolution_months", "payment_recovery_probability"):
+        if field in result:
+            result[field] = to_number(result.get(field))
 
     if track in ["monetary_civil", "employment", "consumer"]:
         claim = case.get("claim_amount") or 0
-        evidence_score = intake.get("evidence_strength_score", 50)
+        evidence_score = to_number(intake.get("evidence_strength_score"), 50)
         legal_standing = legal.get("legal_standing", "MODERATE")
 
         # Validate ZOPA values are present and numeric
         for field in ["zopa_min", "zopa_max", "zopa_optimal", "negotiation_anchor"]:
-            val = result.get(field)
-            if val is None or not isinstance(val, (int, float)) or val < 0:
+            val = to_number(result.get(field))
+            if val is None or val < 0:
                 result[field] = _calculate_zopa_fallback(field, claim, evidence_score, legal_standing, track, legal)
+            else:
+                result[field] = val
 
         # Employment: zopa_min must be >= statutory_dues_floor
         if track == "employment":
-            statutory_floor = legal.get("total_statutory_dues", 0) or 0
+            statutory_floor = to_number(legal.get("total_statutory_dues"), 0) or 0
             result["statutory_dues_floor"] = statutory_floor
             if statutory_floor > 0:
                 result["zopa_min"] = max(result["zopa_min"], statutory_floor)
@@ -620,7 +622,7 @@ def _calculate_zopa_fallback(
 def _fallback_analytics(case: dict, track: str, intake: dict, legal: dict) -> dict:
     """Safe fallback analytics — always produces concrete ZOPA numbers."""
     claim = case.get("claim_amount") or 0
-    evidence_score = intake.get("evidence_strength_score", 40)
+    evidence_score = to_number(intake.get("evidence_strength_score"), 40)
     legal_standing = legal.get("legal_standing", "MODERATE")
 
     if track in ["monetary_civil", "employment", "consumer"]:

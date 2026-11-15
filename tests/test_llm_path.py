@@ -113,3 +113,46 @@ def test_misbehaving_llm_mediator_is_corrected_end_to_end(client, login, fake_ll
     assert seen["mediator"] == 1 and seen["statements"]
     assert 30000 <= view["ai_proposed_amount"] <= 50000
     assert "ZOPA" not in view["ai_reasoning"]
+
+
+WRONG_TYPES = {
+    "track": "monetary_civil", "confidence": "high", "is_criminal": "no", "criminal_elements": "none",
+    "dispute_type": ["Deposit"], "severity": 3, "key_facts": "Deposit unpaid.", "key_issues": "deposit",
+    "evidence_available": "agreement", "evidence_strength_score": "high",
+    "missing_proof_checklist": "receipt", "claimant_strengths": "has agreement",
+    "claimant_weaknesses": None, "confirmed_claim_amount": "Rs. 60,000",
+    "applicable_laws": "Indian Contract Act s.73", "legal_standing": "pretty good",
+    "respondent_defenses": "none", "relief_available": "money", "filing_steps": "go to court",
+    "total_statutory_dues": "nil",
+    "win_probability": "70%", "zopa_min": "Rs. 30,000", "zopa_max": "lots", "zopa_optimal": None,
+    "court_cost_estimate": "about 50k", "time_to_resolution_months": "two years",
+    "proposed_amount": "Rs 45,000", "reasoning": 12345, "live_reasoning_log": "step",
+}
+
+
+def test_wrongly_typed_llm_output_does_not_break_the_flow(client, login, fake_llm, caplog):
+    import logging
+    from urllib.parse import parse_qs, urlparse
+    from app.services.cosmos_service import cosmos_service
+    caplog.set_level(logging.ERROR)
+    fake_llm(lambda s, u: json.dumps(WRONG_TYPES))
+    headers = login("types@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="types@example.com", respondent_email="types-resp@example.com"))
+    assert r.status_code == 200, r.text
+    case_id = r.json()["case_id"]
+    # "is_criminal": "no" must not be read as True (it used to force the criminal track).
+    assert cosmos_service.get_case(case_id)["status"] == "ANALYZED"
+    client.post(f"/api/cases/{case_id}/send-invite", headers=headers)
+    mails = client.get("/api/dev/outbox", params={"email": "types-resp@example.com"}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 50000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 30000})
+
+    case = cosmos_service.get_case(case_id)
+    errors = [rec.getMessage()[:160] for rec in caplog.records
+              if rec.levelno >= logging.ERROR and "LLM call failed" not in rec.getMessage()]
+    assert not errors, errors
+    assert case["status"] == "PROPOSAL_ISSUED", case["status"]

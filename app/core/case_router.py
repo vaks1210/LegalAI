@@ -58,6 +58,16 @@ Respond ONLY in this exact JSON. No text outside JSON.
 """
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "y", "1")
+    return False
+
+
 def route_case(
     dispute_text: str,
     claim_amount: float | None,
@@ -100,8 +110,14 @@ Classify this dispute into exactly one track.
             if field not in result:
                 result[field] = None
 
-        if result.get("criminal_elements") is None:
-            result["criminal_elements"] = []
+        # LLMs sometimes answer booleans as strings ("no" is truthy in Python,
+        # which wrongly forced civil disputes into the criminal track).
+        for flag in ("is_criminal", "is_monetary", "respondent_is_company"):
+            result[flag] = _as_bool(result.get(flag))
+        elements = result.get("criminal_elements")
+        if isinstance(elements, str):
+            elements = [] if elements.strip().lower() in ("", "none", "no", "n/a", "[]") else [elements]
+        result["criminal_elements"] = elements if isinstance(elements, list) else []
 
         # An LLM reply without a valid track (or with a bogus one) must not
         # leave the case untracked — that skips the criminal safety routing.
