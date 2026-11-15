@@ -169,3 +169,47 @@ def test_legal_output_types_are_normalised(client, login, fake_llm):
     assert legal["applicable_laws"][0]["act"] == "Indian Contract Act s.73"
     assert legal["legal_standing"] == "MODERATE"
     assert legal["total_statutory_dues"] == 0
+
+
+DOC_WRONG_TYPES = {
+    **WRONG_TYPES,
+    "subject_line": 5, "paragraph_1": ["first", "second"], "paragraph_2": {"x": 1},
+    "paragraph_3": None, "prayer_for_relief": "pay up", "evidence_checklist": "receipts",
+    "advisory_summary": ["a"], "fir_draft_points": "point", "clauses": "one clause",
+    "case_summary": 7, "facts": "fact", "grounds": {"g": 1},
+    "winning_strategy": "be calm", "best_settlement_range": 42, "negotiation_script": "say x",
+}
+
+
+def test_documents_and_strategy_survive_wrongly_typed_llm_content(client, login, fake_llm, caplog):
+    import logging
+    from app.services.cosmos_service import cosmos_service
+    caplog.set_level(logging.ERROR)
+    fake_llm(lambda s, u: json.dumps(DOC_WRONG_TYPES))
+    headers = login("docfuzz@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="docfuzz@example.com", respondent_email="docfuzz-r@example.com"))
+    case_id = r.json()["case_id"]
+    docs = cosmos_service.get_case(case_id)["documents_data"]
+    assert docs["demand_letter_url"] and docs["court_file_url"], docs
+    assert client.post(f"/api/cases/{case_id}/strategy", headers=headers).status_code == 200
+    errors = [rec.getMessage()[:160] for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert not errors, errors
+
+
+def test_fir_advisory_survives_wrongly_typed_llm_content(client, login, fake_llm, caplog):
+    import logging
+    from app.services.cosmos_service import cosmos_service
+    caplog.set_level(logging.ERROR)
+    fake_llm(lambda s, u: json.dumps({**DOC_WRONG_TYPES, "track": "criminal", "is_criminal": "yes",
+                                      "ipc_sections_to_cite": "BNS 115", "support_resources": ["112"],
+                                      "evidence_to_collect": "photos", "immediate_safety_steps": 3}))
+    headers = login("firfuzz@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="firfuzz@example.com", respondent_email="firfuzz-r@example.com", claim_amount=None,
+        dispute_text="My neighbour attacked me with a rod and threatened to kill me; I was injured."))
+    assert r.json()["status"] == "CRIMINAL_ADVISORY"
+    docs = cosmos_service.get_case(r.json()["case_id"])["documents_data"]
+    assert docs["fir_advisory_url"], docs
+    errors = [rec.getMessage()[:160] for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert not errors, errors

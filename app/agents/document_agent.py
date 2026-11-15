@@ -157,6 +157,12 @@ def _safe(text: str) -> str:
     """
     if not text:
         return ""
+    if isinstance(text, (list, tuple)):
+        text = " ".join(str(t) for t in text if t)
+    elif isinstance(text, dict):
+        text = " ".join(str(v) for v in text.values() if v)
+    elif not isinstance(text, str):
+        text = str(text)
     replacements = {
         "\u20b9": "Rs.", "\u20ac": "EUR", "\u00a3": "GBP",
         "\u2019": "'",   "\u2018": "'",   "\u201c": '"',   "\u201d": '"',
@@ -172,6 +178,17 @@ def _safe(text: str) -> str:
     # ReportLab Paragraph parses its input as markup: user text containing
     # "<" or "&" could break or inject formatting, crashing PDF generation.
     return xml_escape(text)
+
+
+def _as_list(value) -> list:
+    """LLM content fields meant to be lists sometimes arrive as a string/None."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return [value]
 
 
 def _today() -> str:
@@ -466,9 +483,11 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
         story.append(Spacer(1, 4*mm))
         story.append(_section_heading("Laws Referenced", NAVY))
         for law in laws[:6]:
+            if not isinstance(law, dict):
+                law = {"act": str(law)}
             story.append(_bullet(
                 f"{law.get('act')} — Section {law.get('section')}: "
-                f"{law.get('relevance','')[:80]}"
+                f"{(law.get('relevance') or '')[:80]}"
             ))
 
     _append_case_record_sections(story, case, intake, legal, analytics)
@@ -584,7 +603,7 @@ Relief available: {legal.get('relief_available', [])}
         if party_profile.get("relationship_context"):
             story.append(_bullet(f"Relationship context: {party_profile.get('relationship_context')}"))
 
-    chronology = content.get("chronology", [])
+    chronology = _as_list(content.get("chronology"))
     if chronology:
         story.append(_section_heading("Chronology", RED))
         for i, item in enumerate(chronology[:10], 1):
@@ -616,16 +635,16 @@ Relief available: {legal.get('relief_available', [])}
 
     # Plaint averments
     story.append(_section_heading("Plaint Averments", RED))
-    for i, av in enumerate(content.get("plaint_averments", []), 1):
+    for i, av in enumerate(_as_list(content.get("plaint_averments")), 1):
         story.append(_body_para(f"{i}. {av}"))
 
-    issues = content.get("issues_in_dispute", [])
+    issues = _as_list(content.get("issues_in_dispute"))
     if issues:
         story.append(_section_heading("Issues In Dispute", RED))
         for item in issues[:10]:
             story.append(_bullet(item))
 
-    defense_points = content.get("respondent_defenses", [])
+    defense_points = _as_list(content.get("respondent_defenses"))
     if defense_points:
         story.append(_section_heading("Respondent Defenses", RED))
         for item in defense_points[:10]:
@@ -633,10 +652,12 @@ Relief available: {legal.get('relief_available', [])}
 
     # Evidence checklist
     story.append(_section_heading("Evidence Checklist", RED))
-    ev_list = content.get("evidence_checklist", [])
+    ev_list = _as_list(content.get("evidence_checklist"))
     if ev_list:
         ev_data = [["Evidence Item", "Available", "Importance"]]
         for item in ev_list:
+            if not isinstance(item, dict):
+                item = {"item": str(item)}
             ev_data.append([
                 xml_unescape(_safe(item.get("item", ""))),  # plain table cell, not markup
                 "YES" if item.get("available") else "NO",
@@ -657,30 +678,32 @@ Relief available: {legal.get('relief_available', [])}
         story.append(ev_tbl)
 
     # Witness list
-    witnesses = content.get("witness_list", [])
+    witnesses = _as_list(content.get("witness_list"))
     if witnesses:
         story.append(_section_heading("Witness List", RED))
         for w in witnesses:
+            if not isinstance(w, dict):
+                w = {"role": str(w)}
             story.append(_bullet(
                 f"{w.get('role','')}: {w.get('relevance','')}"
             ))
 
     # Pre-filing actions
-    actions = content.get("pre_filing_actions", [])
+    actions = _as_list(content.get("pre_filing_actions"))
     if actions:
         story.append(_section_heading("Pre-Filing Actions Required", RED))
         for a in actions:
             story.append(_bullet(a))
 
     # Filing steps
-    steps = content.get("filing_steps", [])
+    steps = _as_list(content.get("filing_steps"))
     if steps:
         story.append(_section_heading("Filing Steps", RED))
         for i, s in enumerate(steps, 1):
             story.append(_body_para(f"{i}. {s}"))
 
     # Prayer for relief
-    prayers = content.get("prayer_for_relief", [])
+    prayers = _as_list(content.get("prayer_for_relief"))
     if prayers:
         story.append(_section_heading("Prayer for Relief", RED))
         for p in prayers:
@@ -691,9 +714,11 @@ Relief available: {legal.get('relief_available', [])}
     if laws:
         story.append(_section_heading("Applicable Statutes", RED))
         for law in laws[:8]:
+            if not isinstance(law, dict):
+                law = {"act": str(law)}
             story.append(_bullet(
                 f"{law.get('act')} — Section {law.get('section','N/A')} "
-                f"[{law.get('strength','SUPPORTING')}]: {law.get('relevance','')[:80]}"
+                f"[{law.get('strength','SUPPORTING')}]: {(law.get('relevance') or '')[:80]}"
             ))
 
     _append_case_record_sections(story, case, intake, legal, analytics)
@@ -1001,51 +1026,53 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
     story.append(_body_para(content.get("advisory_summary", "")))
 
     # IPC Sections
-    ipc_sections = content.get("ipc_sections_to_cite", [])
+    ipc_sections = _as_list(content.get("ipc_sections_to_cite"))
     if ipc_sections:
         story.append(_section_heading("Applicable Criminal Law Sections (BNS / earlier IPC)", ORANGE))
         for sec in ipc_sections:
             if isinstance(sec, dict):
                 story.append(_bullet(
                     f"{sec.get('section','')}: {sec.get('title','')} — "
-                    f"{sec.get('explanation','')[:100]}"
+                    f"{(sec.get('explanation') or '')[:100]}"
                 ))
             else:
                 story.append(_bullet(str(sec)))
 
     # FIR draft points
-    fir_points = content.get("fir_draft_points", [])
+    fir_points = _as_list(content.get("fir_draft_points"))
     if fir_points:
         story.append(_section_heading("Key Points to Include in FIR", ORANGE))
         for i, pt in enumerate(fir_points, 1):
             story.append(_body_para(f"{i}. {pt}"))
 
     # Filing steps
-    steps = content.get("filing_steps", [])
+    steps = _as_list(content.get("filing_steps"))
     if steps:
         story.append(_section_heading("Filing Steps", ORANGE))
         for i, s in enumerate(steps, 1):
             story.append(_body_para(f"{i}. {s}"))
 
     # Evidence to collect
-    evidence = content.get("evidence_to_collect", [])
+    evidence = _as_list(content.get("evidence_to_collect"))
     if evidence:
         story.append(_section_heading("Evidence to Collect Before Filing", ORANGE))
         for ev in evidence:
             story.append(_bullet(ev))
 
     # Immediate safety steps
-    safety = content.get("immediate_safety_steps", [])
+    safety = _as_list(content.get("immediate_safety_steps"))
     if safety:
         story.append(_section_heading("Immediate Safety Steps", RED))
         for s in safety:
             story.append(_bullet(s))
 
     # Support resources
-    resources = content.get("support_resources", [])
+    resources = _as_list(content.get("support_resources"))
     if resources:
         story.append(_section_heading("Support Resources", ORANGE))
         for r in resources:
+            if not isinstance(r, dict):
+                r = {"name": str(r)}
             if isinstance(r, dict):
                 story.append(_bullet(f"{r.get('name','')}: {r.get('contact','')}"))
 
