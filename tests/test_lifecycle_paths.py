@@ -338,3 +338,48 @@ def test_non_monetary_case_has_no_agent_errors_anywhere(client, login):
     assert r.status_code == 200, r.text
     case = cosmos_service.get_case(case_id)
     assert not {k: v for k, v in case.items() if k.endswith("_error")}
+
+
+import pytest  # noqa: E402
+
+TRACK_CASES = {
+    "employment": dict(
+        claim_amount=85000, respondent_type="company", respondent_company_name="Acme Pvt Ltd",
+        dispute_text=("My employer has not paid my salary for the last two months (Rs 85,000) after I "
+                      "resigned and served my full notice period. HR ignores my emails and salary slips "
+                      "show the dues."),
+    ),
+    "consumer": dict(
+        claim_amount=24000, respondent_type="company", respondent_company_name="ShopKart Online",
+        dispute_text=("I ordered a laptop online for Rs 24,000 and paid by UPI, but the product delivered "
+                      "was defective. The seller refused a refund and closed my complaint ticket without reply."),
+    ),
+}
+
+
+@pytest.mark.parametrize("track", sorted(TRACK_CASES))
+def test_each_track_runs_without_agent_errors(client, login, track):
+    from app.services.cosmos_service import cosmos_service
+    n = next(_counter)
+    cl_email, rs_email = f"{track}-cl{n}@paths.test", f"{track}-rs{n}@paths.test"
+    headers = login(cl_email)
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email=cl_email, respondent_email=rs_email, **TRACK_CASES[track],
+    ))
+    assert r.status_code == 200, r.text
+    assert r.json()["track"] == track
+    case_id = r.json()["case_id"]
+    case = cosmos_service.get_case(case_id)
+    assert not {k: v for k, v in case.items() if k.endswith("_error")}
+    assert case["documents_data"]["demand_letter_url"]
+    assert case["documents_data"]["court_file_url"]
+
+    assert client.post(f"/api/cases/{case_id}/strategy", headers=headers).status_code == 200
+    assert client.post(f"/api/cases/{case_id}/send-invite", headers=headers).status_code == 200
+    mails = client.get("/api/dev/outbox", params={"email": rs_email}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+    out = _play_round(client, case_id, headers, rs_email, token, 1, decision="ACCEPT")
+    assert out["outcome"] == "SETTLED"
+    case = cosmos_service.get_case(case_id)
+    assert case["status"] == "SETTLED"
+    assert not {k: v for k, v in case.items() if k.endswith("_error")}
