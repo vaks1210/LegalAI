@@ -29,6 +29,7 @@ def test_demand_letter_sent_to_respondent_hides_claimant_private_analysis(client
         assert private not in text, private
     assert "Asha Verma" in text
     assert "Indian Contract Act" in text and "Rs. 60,000" in text
+    assert "Without Prejudice" not in text and "my client" not in text
 
     court = _pdf_text(client, case["documents_data"]["court_file_url"])
     assert "CLAIMANT STRENGTHS" in court  # the claimant-only court file keeps the full record

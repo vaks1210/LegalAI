@@ -415,6 +415,9 @@ Paragraph 5: DEMAND — State exactly what is demanded (amount/action), includin
 Paragraph 6: DEADLINE AND CLOSING — Give 15 days to comply, state consequences, and close formally.
 
 Use formal legal English. Do not use bullet points.
+The CLAIMANT signs and sends this letter personally: write in the first person as the
+claimant ("I", "me"), never "my client". Do not mark it "without prejudice" — it is a
+formal demand intended to be relied on as evidence.
 Respond ONLY in JSON:
 {
   "paragraph_1": "text",
@@ -466,22 +469,22 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
         ][:3]
         forum = legal.get("forum_name") or "the competent court or forum"
         demand = (
-            f"You are hereby called upon to pay Rs. {claim:,.0f} to my client within 15 days of receipt of this notice."
+            f"I hereby call upon you to pay me Rs. {claim:,.0f} within 15 days of receipt of this notice."
             if claim else
-            "You are hereby called upon to stop the conduct described above and take the steps necessary to "
+            "I hereby call upon you to stop the conduct described above and take the steps necessary to "
             "remedy it within 15 days of receipt of this notice."
         )
         content = {
             "subject_line": f"Re: Legal Notice — {intake.get('dispute_type') or 'Dispute'}",
-            "paragraph_1":  f"This notice is issued on behalf of {case['claimant_name']} concerning the following: "
+            "paragraph_1":  f"I, {case['claimant_name']}, issue this notice to you concerning the following: "
                             f"{case['dispute_text'][:600]}",
             "paragraph_2":  ("The conduct described gives rise to liability under "
                              + ("; ".join(laws) if laws else "applicable Indian law") + "."),
             "paragraph_3":  demand,
-            "paragraph_4":  f"If you fail to comply within that period, my client will proceed before {forum} "
+            "paragraph_4":  f"If you fail to comply within that period, I will proceed before {forum} "
                             "without further notice, and will seek costs and interest as the court may allow.",
             "paragraph_5":  "You may respond, and propose a settlement, through the secure link sent to you with "
-                            "this notice. All rights of my client are expressly reserved.",
+                            "this notice. All my rights are expressly reserved.",
         }
 
     # Build PDF
@@ -492,7 +495,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
     story.extend(_header_block(
         NAVY,
         "LEGAL NOTICE",
-        "Without Prejudice",
+        "Formal Demand Notice",
         case["id"],
     ))
 
