@@ -103,6 +103,14 @@ Classify this dispute into exactly one track.
         if result.get("criminal_elements") is None:
             result["criminal_elements"] = []
 
+        # An LLM reply without a valid track (or with a bogus one) must not
+        # leave the case untracked — that skips the criminal safety routing.
+        valid_tracks = {"monetary_civil", "non_monetary", "employment", "consumer", "criminal"}
+        if result.get("track") not in valid_tracks:
+            logger.warning(f"Router LLM returned invalid track {result.get('track')!r} — using rule-based routing")
+            from app.agents import offline_analysis
+            return offline_analysis.route(dispute_text, claim_amount, respondent_type, claimant_state)
+
         # Safety override — if criminal elements found, force criminal track
         if result.get("is_criminal") and result.get("track") != "criminal":
             logger.warning(

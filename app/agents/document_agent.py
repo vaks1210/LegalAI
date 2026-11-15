@@ -234,7 +234,7 @@ def _parties_table(case: dict) -> Table:
             Paragraph(_safe(f"{case['claimant_city']}, {case['claimant_state']}"), body),
             Paragraph(_safe(
                 case.get("respondent_company_name") or
-                f"{case.get('respondent_type','individual').title()}"
+                f"{(case.get('respondent_type') or 'individual').title()}"
             ), body),
         ],
         [
@@ -1104,7 +1104,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
 
     details = [
         ["Case Reference",  case["id"][:8].upper()],
-        ["Case Track",      case.get("track", "N/A").replace("_", " ").title()],
+        ["Case Track",      (case.get("track") or "N/A").replace("_", " ").title()],
         ["Claim Amount",    f"Rs. {(case.get('claim_amount') or 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
         ["Claimant",        case["claimant_name"]],
         ["Respondent",      case["respondent_name"]],

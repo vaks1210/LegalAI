@@ -866,7 +866,7 @@ async def get_negotiation_status(
 
     # Only the authenticated claimant gets the full negotiation status here
     # (it includes both parties' offers). Respondents use GET /api/respondent/case/{id}.
-    if current_user.get("email", "").lower() != (case.get("claimant_email") or "").lower():
+    if (current_user.get("email") or "").lower() != (case.get("claimant_email") or "").lower():
         raise UnauthorizedAccess()
 
     neg          = cosmos_service.get_negotiation_by_case(case_id)

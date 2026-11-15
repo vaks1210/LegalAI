@@ -518,7 +518,7 @@ def _build_party_statements(case: dict, negotiation: dict, round_number: int) ->
         if pr.get("round_number", round_number) > round_number:
             continue
         status = pr.get("status", "PENDING")
-        entry = f"- {pr.get('requested_by', '?').title()} asked {pr.get('requested_from', '?')} for: {_clip(pr.get('request_text'), 200)} [{status}]"
+        entry = f"- {(pr.get('requested_by') or '?').title()} asked {pr.get('requested_from', '?')} for: {_clip(pr.get('request_text'), 200)} [{status}]"
         if pr.get("response_text"):
             entry += f" — answer: {_clip(pr['response_text'], 400)}"
         elif status == "PENDING":
