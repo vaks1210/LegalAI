@@ -61,6 +61,15 @@ async def _handle_expired_case(case: dict):
         elif status == CaseStatus.SETTLING.value:
             await _expire_settling(case_id, case)
 
+        elif status == CaseStatus.ANALYZING.value:
+            await _resume_analysis(case_id, case)
+
+        elif status == CaseStatus.MEDIATOR_REVIEW.value:
+            await _resume_mediation(case_id, case)
+
+        elif status == CaseStatus.ESCALATING.value:
+            await _resume_escalation(case_id)
+
     except Exception as e:
         logger.error(f"Expiry handler failed | case_id={case_id} | status={status} | error={e}")
 
@@ -68,6 +77,32 @@ async def _handle_expired_case(case: dict):
 # ══════════════════════════════════════════════════════════════
 # EXPIRY HANDLERS PER STATE
 # ══════════════════════════════════════════════════════════════
+
+async def _resume_analysis(case_id: str, case: dict):
+    """Analysis was interrupted (e.g. server restart) — run it again."""
+    logger.warning(f"Resuming interrupted analysis | case_id={case_id}")
+    from app.routers.cases import _run_full_pipeline
+    await _run_full_pipeline(case_id)
+
+
+async def _resume_mediation(case_id: str, case: dict):
+    """Mediation was interrupted after both offers arrived — run it again."""
+    neg = cosmos_service.get_negotiation_by_case(case_id)
+    if not neg:
+        return
+    logger.warning(f"Resuming interrupted mediation | case_id={case_id}")
+    from app.routers.negotiation import _run_mediation
+    await _run_mediation(case_id, neg["id"], case.get("current_round", 1))
+
+
+async def _resume_escalation(case_id: str):
+    """Escalation was interrupted — finish it."""
+    logger.warning(f"Completing interrupted escalation | case_id={case_id}")
+    cosmos_service.transition_case(case_id, CaseStatus.ESCALATED, {
+        "escalated_at": datetime.now(timezone.utc).isoformat(),
+        "action_required_by": None,
+    })
+
 
 async def _expire_analyzed(case_id: str):
     """

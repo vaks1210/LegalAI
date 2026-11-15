@@ -430,3 +430,43 @@ def test_escalation_completes_even_if_certificate_fails(client, login, monkeypat
     for rnd in (1, 2, 3):
         _play_round(client, case_id, headers, resp_email, token, rnd)
     assert _status(client, case_id) == "ESCALATED"
+
+
+def test_interrupted_analysis_is_resumed_by_worker(client, login, monkeypatch):
+    import app.routers.cases as cases_router
+    from app.services.cosmos_service import cosmos_service
+
+    async def interrupted(case_id):  # simulates the server dying mid-pipeline
+        return None
+    monkeypatch.setattr(cases_router, "_run_full_pipeline", interrupted)
+    headers = login("restart@paths.test")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="restart@paths.test", respondent_email="restart-r@paths.test"))
+    case_id = r.json()["case_id"]
+    assert _status(client, case_id) == "ANALYZING"
+    monkeypatch.undo()
+
+    _expire_now(case_id)
+    _run_expiry()
+    case = cosmos_service.get_case(case_id)
+    assert case["status"] == "ANALYZED"
+    assert case["documents_data"]["demand_letter_url"]
+
+
+def test_interrupted_mediation_is_resumed_by_worker(client, login, monkeypatch):
+    import app.routers.negotiation as neg_router
+    case_id, headers, resp_email, token = _invited_case(client, login)
+
+    async def interrupted(*a, **k):
+        return None
+    monkeypatch.setattr(neg_router, "_run_mediation", interrupted)
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 55000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 30000})
+    assert _status(client, case_id) == "MEDIATOR_REVIEW"
+    monkeypatch.undo()
+
+    _expire_now(case_id)
+    _run_expiry()
+    assert _status(client, case_id) == "PROPOSAL_ISSUED"

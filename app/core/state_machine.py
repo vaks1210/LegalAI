@@ -8,6 +8,11 @@ logger = logging.getLogger(__name__)
 
 
 STAGE_DEADLINES = {
+    # Short "watchdog" deadlines for in-flight work: if the server restarts
+    # (e.g. a deploy) mid-task, the expiry worker resumes it.
+    CaseStatus.ANALYZING: 1,
+    CaseStatus.MEDIATOR_REVIEW: 1,
+    CaseStatus.ESCALATING: 1,
     CaseStatus.INVITE_SENT: 7 * 24,
     CaseStatus.RESPONDENT_VIEWED: 5 * 24,
     CaseStatus.NEGOTIATION_OPEN: 3 * 24,
