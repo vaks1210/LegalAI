@@ -26,44 +26,44 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 class RespondentVerify(BaseModel):
-    case_id: str
-    email:   str
-    token:   str = ""
+    case_id:        str
+    email:          str = ""  # optional: the token identifies the respondent
+    token:          str = ""  # signed token from the emailed portal link (required)
 
 
 class RespondentDecision(BaseModel):
-    case_id:  str
-    email:    str
-    token:   str = ""
-    decision: str
-    reason:   str | None = None
+    case_id:        str
+    email:          str = ""  # optional: the token identifies the respondent
+    token:          str = ""  # signed token from the emailed portal link (required)
+    decision:       str
+    reason:         str | None = None
 
 
 class RespondentCounterClaim(BaseModel):
     case_id:        str
-    email:          str
-    token:   str = ""
+    email:          str = ""  # optional: the token identifies the respondent
+    token:          str = ""  # signed token from the emailed portal link (required)
     counter_claim:  str = Field(..., min_length=5, max_length=3000)
     counter_amount: float | None = None
 
 
 class RespondentProofResponse(BaseModel):
-    case_id:       str
-    email:         str
-    token:   str = ""
-    round_number:  int
-    request_id:    str
-    response_text: str = Field(..., min_length=5, max_length=3000)
-    file_refs:     list[str] = []
+    case_id:        str
+    email:          str = ""  # optional: the token identifies the respondent
+    token:          str = ""  # signed token from the emailed portal link (required)
+    round_number:   int
+    request_id:     str
+    response_text:  str = Field(..., min_length=5, max_length=3000)
+    file_refs:      list[str] = []
 
 
 class RespondentEvidenceUpload(BaseModel):
-    case_id:      str
-    email:        str
-    token:   str = ""
-    filename:     str
-    content_type: str = "application/octet-stream"
-    base64_data:  str
+    case_id:        str
+    email:          str = ""  # optional: the token identifies the respondent
+    token:          str = ""  # signed token from the emailed portal link (required)
+    filename:       str
+    content_type:   str = "application/octet-stream"
+    base64_data:    str
 
 
 # ─────────────────────────────────────────────────────────────
@@ -426,7 +426,7 @@ async def respondent_evidence_upload(body: RespondentEvidenceUpload):
         "url":          download_url,
         "content_type": content_type,
         "uploaded_at":  datetime.now(timezone.utc).isoformat(),
-        "uploaded_by":  body.email,
+        "uploaded_by":  case["respondent_email"],
     }
     evidence_ids   = list(case.get("evidence_file_ids", [])) + [file_record["id"]]
     evidence_files = list(case.get("evidence_files", []))    + [file_record]
