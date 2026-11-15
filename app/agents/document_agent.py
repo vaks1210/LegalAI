@@ -177,6 +177,16 @@ def _as_list(value) -> list:
     return [value]
 
 
+def _fmt_date(iso: str | None) -> str:
+    """Format a stored ISO timestamp like _today(); fall back to today."""
+    if iso:
+        try:
+            return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).strftime("%d %B %Y")
+        except ValueError:
+            pass
+    return _today()
+
+
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%d %B %Y")
 
@@ -1202,7 +1212,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
         f"{case['respondent_name']} (Respondent) were involved in a dispute "
         f"regarding {case['dispute_text'][:150]}... and that a formal pre-litigation "
         f"mediation attempt was conducted through LegalAI Resolver, an AI-powered "
-        f"dispute resolution platform, on {_today()}."
+        f"dispute resolution platform, between {_fmt_date(case.get('created_at'))} and {_today()}."
     )
     story.append(_body_para(cert_text))
     story.append(Spacer(1, 4*mm))
@@ -1220,7 +1230,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
         ["Claim Amount",    f"Rs. {(case.get('claim_amount') or 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
         ["Claimant",        case["claimant_name"]],
         ["Respondent",      case["respondent_name"]],
-        ["Date Initiated",  _today()],
+        ["Date Initiated",  _fmt_date(case.get("created_at"))],
         ["Platform",        "LegalAI Resolver"],
     ]
     det_tbl = Table(details, colWidths=[60*mm, 100*mm])
@@ -1281,7 +1291,7 @@ async def _generate_breach_notice_pdf(case: dict) -> bytes:
 
     story.append(_body_para(
         f"This notice is issued pursuant to the Settlement Agreement executed "
-        f"between the parties on {_today()} (Case Reference: "
+        f"between the parties on {_fmt_date(case.get('settled_at'))} (Case Reference: "
         f"{case['id'][:8].upper()}) through LegalAI Resolver."
     ))
 

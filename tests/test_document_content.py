@@ -70,3 +70,17 @@ def test_non_monetary_settlement_lists_agreed_actions_not_rupees(client, login):
     text = " ".join(_pdf_text(client, url).split())
     assert "Stop loud music after 10 pm" in text and "Keep parking clear" in text
     assert "Rs. 0" not in text and "To be filled" not in text
+
+
+def test_breach_notice_and_certificate_use_the_real_dates():
+    import asyncio
+    from app.agents.document_agent import _generate_breach_notice_pdf, _generate_mediation_certificate
+    case = {"id": "abcd1234-0000", "track": "monetary_civil", "claimant_name": "A", "respondent_name": "B",
+            "claimant_email": "a@x.com", "respondent_email": "b@x.com", "claimant_city": "Pune",
+            "claimant_state": "Maharashtra", "respondent_type": "individual", "dispute_text": "Deposit.",
+            "claim_amount": 60000, "settled_amount": 45000,
+            "created_at": "2026-09-03T08:00:00+00:00", "settled_at": "2026-10-01T10:00:00+00:00"}
+    breach = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(asyncio.run(_generate_breach_notice_pdf(case)))).pages)
+    cert = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(_generate_mediation_certificate(case))).pages)
+    assert "01 October 2026" in breach
+    assert "03 September 2026" in cert
