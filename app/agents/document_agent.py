@@ -307,22 +307,40 @@ def _disclaimer_footer() -> list:
     ]
 
 
-def _append_case_record_sections(story: list, case: dict, intake: dict, legal: dict, analytics: dict | None = None):
-    story.append(_section_heading("Full Case Record"))
+def _append_case_record_sections(story: list, case: dict, intake: dict, legal: dict,
+                                 analytics: dict | None = None, shared: bool = False):
+    """
+    shared=True for documents the respondent receives (demand letter,
+    settlement agreement): omit the claimant's phone and the claimant's
+    private analysis (weaknesses, evidence gaps, anticipated defences).
+    Previously these were printed in the demand letter sent to the
+    opposing party.
+    """
+    story.append(_section_heading("Case Record" if shared else "Full Case Record"))
+    phone = "" if shared else f" | Phone: {case.get('claimant_phone', 'N/A')}"
     story.append(_body_para(
-        f"Claimant: {case.get('claimant_name')} | Email: {case.get('claimant_email')} | "
-        f"Phone: {case.get('claimant_phone', 'N/A')} | City/State: {case.get('claimant_city', 'N/A')}, {case.get('claimant_state', 'N/A')}"
+        f"Claimant: {case.get('claimant_name')} | Email: {case.get('claimant_email')}"
+        f"{phone} | City/State: {case.get('claimant_city', 'N/A')}, {case.get('claimant_state', 'N/A')}"
     ))
     story.append(_body_para(
         f"Respondent: {case.get('respondent_name')} | Email: {case.get('respondent_email')} | "
         f"Phone: {case.get('respondent_phone', 'N/A')} | Type: {case.get('respondent_type', 'N/A')}"
     ))
     story.append(_body_para(
-        f"Track: {case.get('track', 'N/A')} | Claim Amount: Rs. {(case.get('claim_amount') or 0):,.0f} | "
+        f"Track: {case.get('track', 'N/A')} | Claim: "
+        f"{('Rs. ' + format(case['claim_amount'], ',.0f')) if case.get('claim_amount') else 'Non-monetary'} | "
         f"Incident Date: {case.get('incident_date') or 'Not specified'}"
     ))
     story.append(_section_heading("Dispute Narrative"))
     story.append(_body_para(case.get("dispute_text", "")))
+
+    if shared:
+        evidence_files = case.get("evidence_files", [])
+        if evidence_files:
+            story.append(_section_heading("Evidence on Record"))
+            for file_info in evidence_files[:12]:
+                story.append(_bullet(f"{file_info.get('filename')} (uploaded {str(file_info.get('uploaded_at', ''))[:10]})"))
+        return
 
     strengths = intake.get("claimant_strengths", [])
     weaknesses = intake.get("claimant_weaknesses", [])
@@ -413,13 +431,29 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
         )
     except Exception as llm_err:
         log_llm_fallback(logger, "Document _generate_demand_letter", llm_err)
+        claim = case.get("claim_amount")
+        laws = [
+            f"{l.get('act')}" + (f", {l.get('section')}" if l.get("section") else "")
+            for l in _as_list(legal.get("applicable_laws")) if isinstance(l, dict) and l.get("act")
+        ][:3]
+        forum = legal.get("forum_name") or "the competent court or forum"
+        demand = (
+            f"You are hereby called upon to pay Rs. {claim:,.0f} to my client within 15 days of receipt of this notice."
+            if claim else
+            "You are hereby called upon to stop the conduct described above and take the steps necessary to "
+            "remedy it within 15 days of receipt of this notice."
+        )
         content = {
-            "subject_line": "Re: Legal Notice",
-            "paragraph_1":  case["dispute_text"][:400],
-            "paragraph_2":  "The respondent's actions are in violation of applicable Indian law.",
-            "paragraph_3":  f"You are hereby demanded to pay Rs. {(case.get('claim_amount') or 0):,.0f} within 15 days.",
-            "paragraph_4":  "Failure to comply within 15 days will compel the claimant to initiate legal proceedings.",
-            "paragraph_5":  "All rights are expressly reserved.",
+            "subject_line": f"Re: Legal Notice — {intake.get('dispute_type') or 'Dispute'}",
+            "paragraph_1":  f"This notice is issued on behalf of {case['claimant_name']} concerning the following: "
+                            f"{case['dispute_text'][:600]}",
+            "paragraph_2":  ("The conduct described gives rise to liability under "
+                             + ("; ".join(laws) if laws else "applicable Indian law") + "."),
+            "paragraph_3":  demand,
+            "paragraph_4":  f"If you fail to comply within that period, my client will proceed before {forum} "
+                            "without further notice, and will seek costs and interest as the court may allow.",
+            "paragraph_5":  "You may respond, and propose a settlement, through the secure link sent to you with "
+                            "this notice. All rights of my client are expressly reserved.",
         }
 
     # Build PDF
@@ -477,7 +511,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
                 f"{(law.get('relevance') or '')[:80]}"
             ))
 
-    _append_case_record_sections(story, case, intake, legal, analytics)
+    _append_case_record_sections(story, case, intake, legal, analytics, shared=True)  # sent to the respondent
     story.extend(_disclaimer_footer())
     doc.build(story)
     return buf.getvalue()
@@ -765,6 +799,74 @@ Respond ONLY in JSON:
 """
 
 
+def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: list) -> dict:
+    """
+    Complete clauses for when no LLM is available. (The previous fallback
+    printed "To be filled." in nine of eleven clauses, and "pay Rs. 0" for
+    non-monetary settlements.)
+    """
+    claimant, respondent = case["claimant_name"], case["respondent_name"]
+    city = case.get("claimant_city") or case.get("claimant_state") or "the Claimant's place of residence"
+    if actions:
+        terms = ("The Respondent shall carry out the following within 14 days of this Agreement: "
+                 + "; ".join(f"({i}) {a}" for i, a in enumerate(actions, 1)) + ".")
+        payment = "No payment is due under this Agreement; the obligations are the actions set out in Clause 4."
+    else:
+        terms = (f"The Respondent shall pay the Claimant Rs. {settled_amount:,.0f} "
+                 f"(the \"Settlement Amount\") in full and final settlement of the dispute.")
+        payment = ("The Settlement Amount shall be paid within 14 days of this Agreement by bank transfer "
+                   "or UPI to an account nominated by the Claimant in writing. Payment is complete when "
+                   "the funds are received by the Claimant.")
+    clauses = [
+        ("Recitals", f"A dispute arose between {claimant} and {respondent} concerning the matters described in "
+                     "the Case Record above. The parties took part in AI-assisted mediation on the LegalAI "
+                     "Resolver platform and have agreed to resolve the dispute on the terms below."),
+        ("Definitions", "\"Agreement\" means this settlement agreement; \"Dispute\" means the matters described "
+                        "in the Case Record; \"Effective Date\" means the date on which both parties accepted "
+                        "these terms on the platform."),
+        ("Statement of Facts and Disputed Issues",
+         "Each party maintains its own account of the Dispute. This Agreement is a compromise and records "
+         "that both parties prefer settlement to litigation."),
+        ("Settlement Terms", terms),
+        ("Payment Terms", payment),
+        ("Full and Final Release",
+         "On full performance of Clause 4, the Claimant releases the Respondent from all claims arising "
+         "out of the Dispute, and neither party shall bring further proceedings concerning it."),
+        ("No Admission of Liability",
+         "This Agreement is a compromise. Nothing in it is an admission of liability or wrongdoing by either party."),
+        ("Confidentiality and Non-Disparagement",
+         "The parties shall keep the terms of this Agreement confidential, except as required by law or to "
+         "enforce it, and shall not make disparaging public statements about each other concerning the Dispute."),
+        ("Electronic Acceptance",
+         "Both parties accepted these terms electronically on the platform. Contracts formed through "
+         "electronic means are valid under Section 10A of the Information Technology Act, 2000."),
+        ("Default",
+         "If the Respondent fails to perform Clause 4 on time, the Claimant may enforce this Agreement, or "
+         "pursue the original claim, before the competent court or forum, and may rely on this Agreement "
+         "and the mediation record as evidence."),
+        ("Governing Law and Jurisdiction",
+         f"This Agreement is governed by the laws of India. The courts at {city} have jurisdiction over any "
+         "dispute arising from it. This Agreement is the entire agreement between the parties on the Dispute."),
+    ]
+    content = {}
+    for i, (title, text) in enumerate(clauses, 1):
+        content[f"clause_{i}_title"] = title
+        content[f"clause_{i}_text"] = text
+    return content
+
+
+async def _settlement_actions(case: dict) -> list:
+    """Agreed actions for a non-monetary settlement (from the accepted round)."""
+    if case.get("track") != "non_monetary":
+        return []
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    if not neg:
+        return []
+    rnd = next((r for r in neg.get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    actions = rnd.get("ai_proposed_actions") or (rnd.get("respondent") or {}).get("actions") or []
+    return [str(a) for a in _as_list(actions) if a]
+
+
 async def _generate_settlement_pdf(
     case: dict,
     intake: dict,
@@ -773,13 +875,14 @@ async def _generate_settlement_pdf(
     track: str,
 ) -> bytes:
     """Generate settlement agreement PDF."""
+    actions = await _settlement_actions(case)
 
     context = f"""
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute type: {intake.get('dispute_category', case.get('track'))}
 Original claim: Rs. {(case.get('claim_amount') or 0):,.0f}
-Agreed settlement amount: Rs. {settled_amount:,.0f}
+Agreed settlement: {"; ".join(actions) if actions else f"Rs. {settled_amount:,.0f}"}
 Governing state: {case['claimant_state']}
 Settlement date: {_today()}
 Track: {track}
@@ -796,16 +899,7 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
         )
     except Exception as llm_err:
         log_llm_fallback(logger, "Document _generate_settlement_pdf", llm_err)
-        # Basic fallback clauses
-        content = {f"clause_{i}_title": f"Clause {i}" for i in range(1, 12)}
-        content.update({f"clause_{i}_text": "To be filled." for i in range(1, 12)})
-        content["clause_3_text"] = (
-            "This agreement records the dispute background, both parties' positions, and the issues they now agree to resolve by settlement."
-        )
-        content["clause_4_text"] = (
-            f"The Respondent agrees to pay Rs. {settled_amount:,.0f} "
-            f"to the Claimant in full and final settlement of all claims."
-        )
+        content = _fallback_settlement_clauses(case, settled_amount, actions)
 
     buf   = io.BytesIO()
     doc   = _make_doc(buf)
@@ -823,7 +917,8 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
     # Settlement amount highlight box
     amount_data = [[
         Paragraph(
-            f"AGREED SETTLEMENT: Rs. {settled_amount:,.0f}",
+            ("AGREED SETTLEMENT: actions set out in Clause 4" if actions
+             else f"AGREED SETTLEMENT: Rs. {settled_amount:,.0f}"),
             ParagraphStyle("SA", fontName="Helvetica-Bold", fontSize=14,
                            textColor=WHITE, alignment=TA_CENTER),
         )
@@ -849,7 +944,7 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
     ))
     story.append(Spacer(1, 3*mm))
 
-    _append_case_record_sections(story, case, intake, legal, case.get("analytics_data", {}))
+    _append_case_record_sections(story, case, intake, legal, shared=True)  # signed by both parties
 
     # 11 clauses
     for i in range(1, 12):
