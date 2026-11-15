@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # evidence uploads and the email outbox.
     LOCAL_DATA_DIR: str = Field(default="./data")
     RATE_LIMIT_ENABLED: bool = Field(default=True)
+    # Number of reverse proxies in front of the app that append to
+    # X-Forwarded-For (Azure App Service: 1). 0 = ignore the header.
+    TRUSTED_PROXY_COUNT: int = Field(default=1)
 
     # ── OpenAI (non-Azure) — used when Azure OpenAI is not configured ──
     OPENAI_API_KEY:      str = Field(default="")

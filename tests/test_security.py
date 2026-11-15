@@ -116,3 +116,20 @@ def test_markup_in_dispute_is_escaped_in_email_and_does_not_break_pdfs(client, l
     invite = email_service.list_outbox("markup-resp@example.com")[0]["html"]
     assert "<img src=x" not in invite and "&lt;img" in invite
     assert "<script>" not in invite
+
+
+def test_rate_limit_cannot_be_bypassed_by_spoofing_forwarded_for():
+    app = FastAPI()
+    app.add_middleware(RateLimiterMiddleware, rules={"/ping": (2, 60)})
+
+    @app.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    c = TestClient(app)
+    # The proxy appends the real client IP (203.0.113.9) after whatever the caller sent.
+    codes = [
+        c.get("/ping", headers={"X-Forwarded-For": f"10.0.0.{i}, 203.0.113.9"}).status_code
+        for i in range(4)
+    ]
+    assert codes == [200, 200, 429, 429]
