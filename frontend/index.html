@@ -1017,7 +1017,7 @@ async function loadMyCases() {
               <td>${c.respondent_name}</td>
               <td>${(c.track||'').replace('_',' ')}</td>
               <td>${c.claim_amount ? 'Rs. ' + Number(c.claim_amount).toLocaleString('en-IN') : 'Non-monetary'}</td>
-              <td><span class="badge badge-${statusClass(c.status)}">${c.status}</span></td>
+              <td><span class="badge badge-${statusClass(c.status)}" title="${c.status}">${statusLabel(c.status)}</span></td>
               <td>${c.created_at ? c.created_at.slice(0,10) : ''}</td>
               <td>
                 <button class="btn btn-outline btn-sm"
@@ -1032,6 +1032,21 @@ async function loadMyCases() {
     document.getElementById('caseList').innerHTML =
       `<div class="alert alert-error">Failed to load cases. Please refresh.</div>`;
   }
+}
+
+const STATUS_LABELS = {
+  SUBMITTED: 'Submitted', ANALYZING: 'Analysing', ANALYZED: 'Analysis ready',
+  INVITE_SENT: 'Invite sent', RESPONDENT_VIEWED: 'Respondent viewed',
+  NEGOTIATION_OPEN: 'Negotiation open', WAITING_FOR_CLAIMANT: 'Your turn',
+  WAITING_FOR_RESPONDENT: 'Waiting for respondent', PROOF_REQUESTED: 'Proof requested',
+  PROOF_RESPONSE_PENDING: 'Proof pending', MEDIATOR_REVIEW: 'AI mediator reviewing',
+  PROPOSAL_ISSUED: 'Proposal ready', SETTLEMENT_PENDING_CONFIRMATION: 'Confirm settlement',
+  SETTLING: 'Finalising settlement', SETTLED: 'Settled', ESCALATING: 'Escalating',
+  ESCALATED: 'Escalated to court', AUTO_ESCALATED: 'Escalated (no response)',
+  ABANDONED: 'Closed (inactive)', CRIMINAL_ADVISORY: 'Criminal advisory',
+};
+function statusLabel(status) {
+  return STATUS_LABELS[status] || String(status || '').replace(/_/g, ' ').toLowerCase();
 }
 
 function statusClass(s) {
@@ -1259,7 +1274,7 @@ async function openCase(caseId) {
       const r = await axios.get(`${API}/api/cases/${caseId}/status`);
       const s = r.data.status;
       document.getElementById('caseStatusBadge').innerHTML =
-        `<span class="badge badge-${statusClass(s)}">${s}</span>`;
+        `<span class="badge badge-${statusClass(s)}" title="${s}">${statusLabel(s)}</span>`;
       if (['ANALYZED','SETTLED','ESCALATED','AUTO_ESCALATED',
            'ABANDONED','CRIMINAL_ADVISORY'].includes(s)) {
         clearInterval(pollInterval);
@@ -1281,7 +1296,7 @@ async function loadAnalysis(caseId) {
     document.getElementById('caseTitle').textContent =
       `Case #${caseId.slice(0,8).toUpperCase()}`;
     document.getElementById('caseStatusBadge').innerHTML =
-      `<span class="badge badge-${statusClass(c.status)}">${c.status}</span>`;
+      `<span class="badge badge-${statusClass(c.status)}" title="${c.status}">${statusLabel(c.status)}</span>`;
 
     // Still analyzing
     if (['SUBMITTED','ANALYZING'].includes(c.status)) {
@@ -1647,7 +1662,7 @@ async function loadNegotiation() {
                 <div style="padding:10px 12px;border:1px solid #E2E8F0;border-radius:8px;margin-bottom:10px;">
                   <div style="font-size:12px;color:var(--muted);text-transform:uppercase;">${p.requested_by} asked ${p.requested_from}</div>
                   <div style="font-size:13px;font-weight:600;margin:4px 0;">${p.request_text}</div>
-                  <div style="font-size:12px;color:${p.status === 'PENDING' ? 'var(--gold)' : 'var(--green)'};">${p.status}</div>
+                  <div style="font-size:12px;color:${p.status === 'PENDING' ? 'var(--gold)' : 'var(--green)'};">${p.status === 'PENDING' ? 'Awaiting answer' : 'Answered'}</div>
                   ${p.response_text ? `<div style="font-size:13px;color:var(--dark);margin-top:6px;">Response: ${p.response_text}</div>` : ''}
                   ${p.requested_from === 'claimant' && p.status === 'PENDING' ? `
                     <textarea id="claimantProofResponse_${p.id}" style="margin-top:8px;" placeholder="Reply with the proof details, explanation, or why it is unavailable."></textarea>
