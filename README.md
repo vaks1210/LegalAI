@@ -174,6 +174,36 @@ legalai-resolver/
 
 ---
 
+## 🏢 For Businesses (B2B)
+
+LegalAI is built for organisations with many recurring disputes — landlords and property managers,
+lenders/NBFCs, distributors and e-commerce sellers, HR teams. A business files disputes in bulk under its
+own name, tracks recovery, and integrates with its own systems.
+
+| | |
+|---|---|
+| **Business console** | `/business` — overview (claimed vs settled, settlement rate, days to settle, plan usage), cases, bulk upload, team, settings, developer tools |
+| **Bulk filing** | CSV or JSON, up to 500 rows. Required: `respondent_name`, `respondent_email`, `reference` (your invoice/loan/agreement no.). Optional: `claim_amount`, `incident_date`, `due_date`, `respondent_phone`, `evidence`, `details`, `dispute_text`. Idempotent on `reference`; per-row error report |
+| **Templates** | Built-in: overdue invoice, unpaid rent, loan default, dishonoured cheque — plus your own (`PUT /api/orgs/{id}/templates/{key}`) |
+| **Team** | Owner / admin / agent roles; agents work cases through the normal case workspace |
+| **API keys** | `X-API-Key: lai_...` — file and track cases from your billing or loan system (keys can't administer the org) |
+| **Webhooks** | Signed `case.status_changed` and `case.payment_received` events (`X-LegalAI-Signature: sha256=HMAC(secret, body)`), retries, delivery log, SSRF-safe URLs |
+| **Payments** | On settlement: Razorpay payment link (if configured, auto-confirmed by Razorpay's webhook) or your UPI/bank details sent to the respondent |
+| **Mediator review** | Optional: a human mediator (`/mediator`) approves or edits each AI proposal before the parties see it; named in the agreement. Unreviewed drafts are released after the SLA, flagged |
+| **Evidence** | Each acceptance records who/how/when/IP and a fingerprint of the exact terms; agreements carry a Record of Acceptance and can be verified with `POST /api/documents/verify` |
+| **Plans** | Monthly case limits: free 25 · starter 500 · growth 5000 · enterprise unlimited |
+
+```bash
+curl -X POST https://YOUR_HOST/api/orgs/ORG_ID/cases/bulk \
+  -H "X-API-Key: lai_..." -H "Content-Type: application/json" \
+  -d '{"template": "overdue_invoice", "auto_invite": true, "rows": [
+        {"respondent_name": "Ravi Traders", "respondent_email": "accounts@ravitraders.example",
+         "reference": "INV-1001", "claim_amount": 48500, "due_date": "2026-06-15",
+         "evidence": "invoice, delivery challan"}]}'
+```
+
+---
+
 ## ⚡ Quick Start (no cloud account needed)
 
 ```bash
