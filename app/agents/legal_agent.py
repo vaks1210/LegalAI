@@ -25,7 +25,7 @@ PRIMARY STATUTES FOR MONETARY CIVIL DISPUTES:
 - Code of Civil Procedure 1908: Order 37 (summary suits for money recovery)
 - Consumer Protection Act 2019: S.2(7) (consumer definition), S.35 (complaints)
 - Negotiable Instruments Act 1881: S.138 (cheque dishonour — criminal), S.141 (company liability)
-- Payment of Wages Act 1936: S.3 (responsibility for payment), S.15 (claims authority)
+- Code on Wages 2019 (in force 21 Nov 2025; replaced the Payment of Wages Act 1936 — earlier S.3 liability, S.15 claims)
 - State Rent Control Acts: apply state-specific act based on jurisdiction_state
 - Interest: 18% per annum is standard for commercial transactions; 12% for consumer disputes
 - BNS 2023 S.318 (cheating; earlier IPC S.420) — only when fraudulent intent existed from the start, alongside the civil breach
@@ -106,13 +106,27 @@ EMPLOYMENT_PROMPT = """
 You are a senior Indian labour law advocate with deep expertise in employment disputes.
 Analyze the dispute and produce a precise legal assessment with exact statutory calculations.
 
+WHICH LAW APPLIES — India's four Labour Codes came into force on 21 November 2025,
+replacing 29 central labour laws:
+- Code on Wages 2019 replaced the Payment of Wages Act 1936, Minimum Wages Act 1948,
+  Payment of Bonus Act 1965 and Equal Remuneration Act 1976.
+- Industrial Relations Code 2020 replaced the Industrial Disputes Act 1947 (incl. retrenchment
+  conditions earlier in S.25F) and the Industrial Employment (Standing Orders) Act 1946.
+- Code on Social Security 2020 replaced the Payment of Gratuity Act 1972 and the
+  EPF & MP Act 1952 (gratuity and provident fund now sit in this Code).
+For dues/events on or after 21 Nov 2025 cite the Code; for earlier dues the repealed Act may still
+govern under the Codes' savings provisions — cite the Code and give the earlier Act and section in
+brackets, e.g. "Code on Wages 2019 (earlier Payment of Wages Act S.15)". Do NOT invent section numbers
+for the Codes: name the Code and its subject if you are not certain of the exact section.
+
 PRIMARY STATUTES FOR EMPLOYMENT DISPUTES:
-- Industrial Disputes Act 1947: S.2(s) (workman definition), S.25F (retrenchment conditions),
-  S.25G (retrenchment procedure), S.25H (re-employment priority), S.10 (reference to tribunal)
-- Payment of Wages Act 1936: S.3 (liability to pay), S.15 (application to authority for unpaid wages)
-- Payment of Gratuity Act 1972: S.4 (payment of gratuity — 5 years minimum), 
-  S.7 (determination of gratuity), S.8 (recovery of gratuity)
-- Employees Provident Fund & MP Act 1952: S.6 (contributions), S.14B (damages for default)
+- Code on Wages 2019 — timely payment of wages and claims before the authority
+  (earlier Payment of Wages Act 1936 S.3, S.15)
+- Industrial Relations Code 2020 — retrenchment conditions (notice + compensation), recovery of money
+  due from the employer, Labour Court jurisdiction (earlier ID Act 1947 S.25F, S.33C(2), S.10)
+- Code on Social Security 2020 — gratuity (earlier Payment of Gratuity Act 1972 S.4, S.7) and
+  provident fund dues (earlier EPF & MP Act 1952 S.6, S.7A, S.14B). Gratuity normally needs
+  5 years' continuous service; fixed-term employees qualify after 1 year under the Code.
 - Shops and Establishments Act (state-specific): notice period requirements
 - POSH Act 2013: S.4 (Internal Complaints Committee), S.11 (inquiry procedure),
   S.13 (action taken report), S.16 (confidentiality)
@@ -156,7 +170,7 @@ Respond ONLY in valid JSON. No text outside JSON.
   "limitation_notes": "explanation",
   "claimant_rights": [
     "Right to X months notice period pay under Shops & Establishments Act",
-    "Right to gratuity under Payment of Gratuity Act if service >= 5 years"
+    "Right to gratuity under the Code on Social Security 2020 (earlier Payment of Gratuity Act) — 5 years' service, or 1 year for fixed-term employees"
   ],
   "respondent_defenses": [
     "Respondent defense 1",
@@ -206,8 +220,8 @@ Respond ONLY in valid JSON. No text outside JSON.
   ],
   "filing_steps": [
     "Step 1: Send legal notice to employer with 15-day deadline",
-    "Step 2: If no response, file application under Payment of Wages Act S.15 before Payment of Wages Authority",
-    "Step 3: For wrongful termination, file complaint under Industrial Disputes Act before Labour Court"
+    "Step 2: If no response, file a wage claim before the authority under the Code on Wages 2019 (earlier Payment of Wages Act S.15)",
+    "Step 3: For wrongful termination, raise an industrial dispute under the Industrial Relations Code 2020 (earlier ID Act) before the Industrial Tribunal / Labour Court"
   ],
   "recommended_immediate_actions": [
     "Preserve all payslips, offer letter, termination email",

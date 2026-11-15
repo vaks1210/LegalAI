@@ -107,3 +107,13 @@ def test_prompts_do_not_cite_struck_down_or_repealed_provisions_as_current():
     for prompt in (getattr(la, n) for n in dir(la) if n.endswith("_PROMPT")):
         if "66A" in prompt:
             assert "struck down" in prompt
+
+
+def test_employment_cites_labour_codes_with_earlier_acts():
+    case = {"dispute_text": "My employer has not paid my salary for two months.", "claim_amount": 80000,
+            "claimant_state": "Karnataka", "claimant_city": "Bengaluru"}
+    intake = oa.intake(case, "employment")
+    legal = oa.legal(case, "employment", intake)
+    acts = " ".join(l["act"] + " " + l["section"] for l in legal["applicable_laws"])
+    assert "Code on Wages, 2019" in acts
+    assert "earlier Payment of Wages Act" in acts

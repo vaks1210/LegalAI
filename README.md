@@ -63,7 +63,7 @@ Signed Settlement Agreement → Both parties by email
 Each agent receives the previous agent's full output as context — creating an intelligent cascading analysis chain. Not just classification. Deep legal reasoning at every stage.
 
 ### ⚖️ Jurisdiction-Aware Legal Research
-Maps applicable Indian, US, and UK statutes with section numbers, relevance scores, claimant rights, and respondent defenses. Covers BNS/BNSS (the 2023 criminal codes that replaced the IPC/CrPC), TPA, Consumer Protection Act 2019, Industrial Disputes Act, POSH Act, and 12+ dispute categories across 5 tracks.
+Maps applicable Indian, US, and UK statutes with section numbers, relevance scores, claimant rights, and respondent defenses. Covers BNS/BNSS (the 2023 criminal codes that replaced the IPC/CrPC), TPA, Consumer Protection Act 2019, the 2025 Labour Codes (Code on Wages, Industrial Relations, Social Security), POSH Act, and 12+ dispute categories across 5 tracks.
 
 ### 📊 Probabilistic Case Analytics
 Win probability (0–100%), ZOPA (Zone of Possible Agreement), court cost estimate, timeline projection, evidence strength score (0–100), and payment recovery probability. The AI Mediator uses ZOPA internally — **never revealed to either party**.

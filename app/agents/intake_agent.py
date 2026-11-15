@@ -124,7 +124,8 @@ experience_letter_withheld, pf_gratuity_default, non_compete_violation, other_em
 STATUTORY CALCULATION RULES (apply precisely if salary and duration are provided):
 - Notice period pay: last_drawn_salary × notice_period_months
 - Gratuity: (last_drawn_salary × 15 × completed_years_of_service) ÷ 26
-  → Gratuity ONLY applicable if service ≥ 5 years
+  → Gratuity applies after 5 years of continuous service (1 year for fixed-term employees
+    under the Code on Social Security 2020, in force since 21 Nov 2025)
 - PF: Employer must contribute 12% of basic salary; claimant can claim unpaid employer PF
 - Variable pay / bonus: only if contractually promised
 
