@@ -117,3 +117,23 @@ def test_employment_cites_labour_codes_with_earlier_acts():
     acts = " ".join(l["act"] + " " + l["section"] for l in legal["applicable_laws"])
     assert "Code on Wages, 2019" in acts
     assert "earlier Payment of Wages Act" in acts
+
+
+def test_shared_reasoning_never_reveals_zopa():
+    analytics = {"zopa_min": 31500, "zopa_max": 50400, "zopa_optimal": 42000}
+    for rnd in (1, 2, 3):
+        text = _fallback_proposal(CASE, rnd, 55000, 35000, analytics)["reasoning"]
+        for secret in ("42,000", "31,500", "50,400", "anchor", "%"):
+            assert secret not in text, (rnd, secret, text)
+
+
+def test_llm_reasoning_that_leaks_zopa_is_replaced():
+    leaky = ("Our internal range runs from Rs. 31,500 to Rs. 50,400, so we propose Rs. 40,000 " * 2)
+    out = _post_process({"proposed_amount": 40000, "reasoning": leaky}, CASE, ANALYTICS, 1,
+                        "monetary_civil", {}, claimant_offer=55000, respondent_offer=30000)
+    assert "31,500" not in out["reasoning"] and "50,400" not in out["reasoning"]
+
+    fine = ("We propose Rs. 42,000 because the deposit was documented and court would take years. " * 2)
+    out = _post_process({"proposed_amount": 42000, "reasoning": fine}, CASE, ANALYTICS, 1,
+                        "monetary_civil", {}, claimant_offer=55000, respondent_offer=30000)
+    assert out["reasoning"] == fine  # the proposal itself may equal the optimum

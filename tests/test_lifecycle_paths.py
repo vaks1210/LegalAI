@@ -383,3 +383,18 @@ def test_each_track_runs_without_agent_errors(client, login, track):
     case = cosmos_service.get_case(case_id)
     assert case["status"] == "SETTLED"
     assert not {k: v for k, v in case.items() if k.endswith("_error")}
+
+
+def test_respondent_evidence_upload(client, login):
+    import base64
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    body = {"case_id": case_id, "email": resp_email, "token": token,
+            "filename": "invoice.pdf", "content_type": "text/html",
+            "base64_data": base64.b64encode(b"%PDF-1.4 painter invoice").decode()}
+    r = client.post("/api/respondent/evidence-upload", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["content_type"] == "application/pdf"
+    r = client.post("/api/respondent/evidence-upload", json={**body, "token": "bad"})
+    assert r.status_code == 403
+    r = client.post("/api/respondent/evidence-upload", json={**body, "base64_data": "not base64!!"})
+    assert r.status_code == 400

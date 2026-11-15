@@ -600,6 +600,21 @@ def _clamp_to_offers(proposed: float, claimant_offer, respondent_offer) -> float
     return proposed
 
 
+def _reveals_zopa(text: str, analytics: dict, proposed) -> bool:
+    if not text:
+        return False
+    if re.search(r"\bZOPA\b|zone of possible agreement", text, re.IGNORECASE):
+        return True
+    for key in ("zopa_min", "zopa_max", "zopa_optimal"):
+        value = analytics.get(key)
+        if not value or (proposed and abs(float(value) - float(proposed)) < 1):
+            continue
+        for form in (f"{value:,.0f}", f"{value:.0f}"):
+            if re.search(rf"(?<![\d,]){re.escape(form)}(?![\d,])", text):
+                return True
+    return False
+
+
 def _post_process(
     result: dict,
     case: dict,
@@ -638,6 +653,12 @@ def _post_process(
 
         proposed = _clamp_to_offers(proposed, claimant_offer, respondent_offer)
         result["proposed_amount"] = round(proposed, 2)
+
+    # The reasoning is shown to both parties. If the model leaked a
+    # confidential bound (other than the proposed figure itself), replace it.
+    if track != "non_monetary" and _reveals_zopa(result.get("reasoning", ""), analytics, result.get("proposed_amount")):
+        logger.warning(f"Mediator reasoning revealed confidential range — replaced | round={round_number}")
+        result["reasoning"] = _fallback_reasoning(case, round_number, result.get("proposed_amount", 0), analytics)
 
     # Ensure reasoning is substantial
     if not result.get("reasoning") or len(result.get("reasoning", "")) < 80:
@@ -755,9 +776,12 @@ def _fallback_proposal(
     proposed = _round_to(_clamp_to_offers(raw, cl or None, rs if cl else None))
 
     gap = abs(cl - rs) if (cl and rs) else 0
+    # Shown to BOTH parties: must not reveal the fair-value anchor (ZOPA) or
+    # the weighting, from which the anchor could be back-calculated.
     reasoning = (
         f"In Round {round_number} the claimant asks Rs. {cl:,.0f} and the respondent offers "
-        f"Rs. {rs:,.0f} (gap Rs. {gap:,.0f}). The mediator proposes Rs. {proposed:,.0f}, weighing {logic}. "
+        f"Rs. {rs:,.0f} (gap Rs. {gap:,.0f}). The mediator proposes Rs. {proposed:,.0f}, reflecting the "
+        f"legal merits and evidence assessed for this case and the movement both sides have made. "
         f"The figure stays between both positions. Litigation would cost about Rs. {court_cost:,.0f} "
         f"and take roughly {months} months — settling now avoids both."
     )
