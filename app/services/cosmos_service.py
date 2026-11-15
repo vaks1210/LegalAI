@@ -130,11 +130,18 @@ class CosmosService:
         Validates the transition against the *current* stored status
         atomically, sets the deadline and saves.
         """
+        previous = {}
+
         def apply(case):
+            previous["status"] = case.get("status")
             transition(case, new_status)
             if extra_updates:
                 case.update(extra_updates)
-        return self._mutate_case(case_id, apply)
+        updated = self._mutate_case(case_id, apply)
+        if updated.get("org_id"):
+            from app.services.webhooks import on_case_transition
+            on_case_transition(updated, previous.get("status"))
+        return updated
 
     def get_cases_by_email(self, email: str) -> list:
         if self.local:

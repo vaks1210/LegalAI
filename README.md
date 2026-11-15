@@ -292,7 +292,7 @@ APPINSIGHTS_INSTRUMENTATION_KEY=your_key
 ### 5. Create Cosmos DB containers
 
 ```bash
-# Run once to provision the 4 containers
+# Run once to provision the 5 containers
 az cosmosdb sql container create --account-name YOUR_COSMOS \
   --resource-group YOUR_RG --database-name legalai-db \
   --name cases --partition-key-path "/id"
@@ -308,6 +308,10 @@ az cosmosdb sql container create --account-name YOUR_COSMOS \
 az cosmosdb sql container create --account-name YOUR_COSMOS \
   --resource-group YOUR_RG --database-name legalai-db \
   --name documents --partition-key-path "/id"
+
+az cosmosdb sql container create --account-name YOUR_COSMOS \
+  --resource-group YOUR_RG --database-name legalai-db \
+  --name organizations --partition-key-path "/id"
 ```
 
 ### 6. Run

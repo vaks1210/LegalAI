@@ -106,6 +106,8 @@ def _public_org(org: dict) -> dict:
         "templates": {**{k: {**v, "builtin": True} for k, v in b2b.BUILTIN_TEMPLATES.items()},
                       **(org.get("templates") or {})},
         "settings": org.get("settings", {}),
+        "webhook": ({"url": org["webhook"]["url"], "updated_at": org["webhook"].get("updated_at")}
+                    if org.get("webhook") else None),
         "created_at": org.get("created_at"),
     }
 
@@ -452,3 +454,52 @@ async def invite_org_case(case_id: str, actor: OrgActor = Depends(org_actor)):
     if not deliver_invite(case):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
     return {"message": f"Invite sent to {case['respondent_email']}", "status": "INVITE_SENT"}
+
+
+# ─────────────────────────────────────────────────────────────
+# WEBHOOKS
+# ─────────────────────────────────────────────────────────────
+
+class WebhookIn(BaseModel):
+    url: str = Field(..., max_length=500)
+
+
+@router.put("/{org_id}/webhook")
+async def set_webhook(body: WebhookIn, actor: OrgActor = Depends(org_actor)):
+    actor.require(ADMIN_ROLES)
+    from app.services.webhooks import validate_webhook_url
+    try:
+        url = validate_webhook_url(body.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    secret = "whsec_" + secrets.token_urlsafe(24)
+    cosmos_service.mutate_org(actor.org["id"], lambda o: o.__setitem__(
+        "webhook", {"url": url, "secret": secret, "updated_at": _now()}))
+    return {"url": url, "secret": secret,
+            "note": "Verify each delivery: X-LegalAI-Signature = sha256=HMAC_SHA256(secret, raw body). "
+                    "The secret is shown only now."}
+
+
+@router.delete("/{org_id}/webhook")
+async def delete_webhook(actor: OrgActor = Depends(org_actor)):
+    actor.require(ADMIN_ROLES)
+    cosmos_service.mutate_org(actor.org["id"], lambda o: o.pop("webhook", None))
+    return {"message": "Webhook removed."}
+
+
+@router.post("/{org_id}/webhook/test")
+async def test_webhook(actor: OrgActor = Depends(org_actor)):
+    actor.require(ADMIN_ROLES)
+    from starlette.concurrency import run_in_threadpool
+    from app.services import webhooks
+    if not (actor.org.get("webhook") or {}).get("url"):
+        raise HTTPException(status_code=400, detail="No webhook configured.")
+    await run_in_threadpool(webhooks.emit, actor.org, "ping", {"message": "LegalAI webhook test"}, True)
+    log = (cosmos_service.get_org(actor.org["id"]) or {}).get("webhook_log", [])
+    return {"delivery": log[0] if log else None}
+
+
+@router.get("/{org_id}/webhook/deliveries")
+async def webhook_deliveries(actor: OrgActor = Depends(org_actor)):
+    actor.require(ADMIN_ROLES)
+    return {"deliveries": actor.org.get("webhook_log", [])}

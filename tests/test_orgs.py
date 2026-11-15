@@ -154,3 +154,94 @@ def test_stats_track_recovery(client, login):
     assert stats["amount_settled"] == 25000
     assert stats["settlement_rate"] == 1.0
     assert stats["usage"]["this_month"] == 2 and stats["usage"]["monthly_limit"] == 25
+
+
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+import json  # noqa: E402
+import socket  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def webhook_sink(monkeypatch):
+    """Capture deliveries synchronously; resolve hooks.example.com to a public IP."""
+    from app.services import webhooks
+    sent = []
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *a, **k):
+        if host == "hooks.example.com":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        return real_getaddrinfo(host, *a, **k)
+
+    class Immediate:
+        def submit(self, fn, *args):
+            fn(*args)
+            class Done:
+                def result(self_inner): return None
+            return Done()
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(webhooks, "_pool", Immediate())
+    monkeypatch.setattr(webhooks.time, "sleep", lambda s: None)
+    sink = {"status": 200}
+
+    def fake_post(url, body, headers):
+        sent.append({"url": url, "body": body, "headers": headers})
+        return sink["status"]
+    monkeypatch.setattr(webhooks, "_post", fake_post)
+    sink["sent"] = sent
+    return sink
+
+
+def test_webhooks_are_signed_and_fire_on_status_changes(client, login, webhook_sink):
+    org, owner, n = _org(client, login)
+    r = client.put(f"/api/orgs/{org['id']}/webhook", headers=owner, json={"url": "https://hooks.example.com/legalai"})
+    assert r.status_code == 200, r.text
+    secret = r.json()["secret"]
+
+    test = client.post(f"/api/orgs/{org['id']}/webhook/test", headers=owner).json()
+    assert test["delivery"]["ok"] is True
+
+    client.post(f"/api/orgs/{org['id']}/cases/bulk", headers=owner,
+                json={"rows": _rows(n, 1), "template": "unpaid_rent", "auto_invite": True})
+    events = [json.loads(d["body"]) for d in webhook_sink["sent"] if d["headers"]["X-LegalAI-Event"] == "case.status_changed"]
+    statuses = [e["data"]["status"] for e in events]
+    assert statuses[:2] == ["ANALYZING", "ANALYZED"] and "INVITE_SENT" in statuses
+    assert events[0]["data"]["reference"] == f"RENT-{n}-0"
+
+    # Receivers can verify the signature with the secret.
+    d = webhook_sink["sent"][-1]
+    expected = "sha256=" + hmac.new(secret.encode(), d["body"], hashlib.sha256).hexdigest()
+    assert d["headers"]["X-LegalAI-Signature"] == expected
+
+
+def test_failed_webhook_is_retried_and_logged(client, login, webhook_sink):
+    org, owner, n = _org(client, login)
+    client.put(f"/api/orgs/{org['id']}/webhook", headers=owner, json={"url": "https://hooks.example.com/x"})
+    webhook_sink["status"] = 500
+    out = client.post(f"/api/orgs/{org['id']}/webhook/test", headers=owner).json()["delivery"]
+    assert out["ok"] is False and out["attempts"] == 3 and out["error"] == "HTTP 500"
+    log = client.get(f"/api/orgs/{org['id']}/webhook/deliveries", headers=owner).json()["deliveries"]
+    assert log[0]["id"] == out["id"]
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1/hook", "http://169.254.169.254/latest/meta-data", "http://10.1.2.3/x",
+    "http://localhost:8000/admin", "ftp://hooks.example.com/x", "not a url",
+])
+def test_webhook_url_cannot_target_internal_addresses(client, login, webhook_sink, url):
+    org, owner, _ = _org(client, login)
+    r = client.put(f"/api/orgs/{org['id']}/webhook", headers=owner, json={"url": url})
+    assert r.status_code == 400, (url, r.text)
+
+
+def test_only_admins_manage_webhooks(client, login, webhook_sink):
+    org, owner, n = _org(client, login)
+    agent_email = f"wh-agent{n}@acme{n}.test"
+    client.post(f"/api/orgs/{org['id']}/members", headers=owner, json={"email": agent_email, "role": "agent"})
+    agent = login(agent_email)
+    r = client.put(f"/api/orgs/{org['id']}/webhook", headers=agent, json={"url": "https://hooks.example.com/x"})
+    assert r.status_code == 403
