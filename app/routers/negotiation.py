@@ -644,7 +644,16 @@ async def _handle_settlement(case_id: str):
             {"settled_amount": settled_amount, "action_required_by": None},
         )
 
-        settlement_url = await generate_settlement_agreement(case, settled_amount)
+        # Both parties agreed — the case is settled even if the PDF fails to
+        # render. Previously a PDF failure left it in SETTLING, which the
+        # expiry worker later treated as a payment breach. The agreement can
+        # be regenerated on demand from the documents endpoint.
+        try:
+            settlement_url = await generate_settlement_agreement(case, settled_amount)
+        except Exception as pdf_err:
+            logger.exception(f"Settlement PDF failed | case_id={case_id}")
+            settlement_url = None
+            cosmos_service.update_case(case_id, {"settlement_pdf_error": str(pdf_err)})
 
         cosmos_service.transition_case(
             case_id,
@@ -667,7 +676,7 @@ async def _handle_settlement(case_id: str):
                 party_name=party_name,
                 case_id=case_id,
                 settled_amount=settled_amount,
-                download_url=settlement_url,
+                download_url=settlement_url or _portal_url(case, "claimant" if to_email == case["claimant_email"] else "respondent"),
             )
 
         logger.info(f"Case settled | case_id={case_id} | amount=Rs.{settled_amount:,.0f}")

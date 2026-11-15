@@ -398,3 +398,23 @@ def test_respondent_evidence_upload(client, login):
     assert r.status_code == 403
     r = client.post("/api/respondent/evidence-upload", json={**body, "base64_data": "not base64!!"})
     assert r.status_code == 400
+
+
+def test_settlement_completes_even_if_agreement_pdf_fails_then_regenerates(client, login, monkeypatch):
+    import app.agents.document_agent as da
+    real = da.generate_settlement_agreement
+    calls = {"n": 0}
+
+    async def flaky(case, amount):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("renderer down")
+        return await real(case, amount)
+    monkeypatch.setattr(da, "generate_settlement_agreement", flaky)
+
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.post("/api/respondent/accept-in-full", json={"case_id": case_id, "email": resp_email, "token": token})
+    assert _status(client, case_id) == "SETTLED"
+    r = client.get(f"/api/documents/{case_id}/settlement", headers=headers)
+    assert r.status_code == 200, r.text
+    assert calls["n"] == 2

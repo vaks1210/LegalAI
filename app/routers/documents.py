@@ -91,6 +91,16 @@ async def get_settlement(
     ).get("settlement_url")
 
     if not url:
+        # Agreement PDF failed at settlement time — generate it now.
+        try:
+            from app.agents.document_agent import generate_settlement_agreement
+            url = await generate_settlement_agreement(case, case.get("settled_amount") or 0)
+            cosmos_service.update_case(case_id, {"settlement_url": url, "settlement_pdf_error": None})
+        except Exception:
+            logger.exception(f"On-demand settlement PDF failed | case_id={case_id}")
+            url = None
+
+    if not url:
         raise HTTPException(
             status_code=404,
             detail="Settlement agreement not found.",
