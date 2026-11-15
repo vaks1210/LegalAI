@@ -42,6 +42,8 @@ CATEGORY_RULES = [
      r"\b(terminat\w+|fired|dismiss\w+|laid off|sacked)\b"),
     ("unpaid_salary", "employment", "Unpaid Salary / Wages",
      r"\b(salary|wages?|unpaid (pay|dues)|full and final|f&f|notice pay)\b"),
+    ("unpaid_rent", "monetary_civil", "Unpaid Rent",
+     r"\b(unpaid rent|rent arrears|arrears of rent|rent (dues|due|outstanding))\b"),
     ("rental_deposit", "monetary_civil", "Security Deposit Refund",
      r"\b(security deposit|deposit|landlord|tenant|rent(ed|al)?|lease|leave and licen[cs]e)\b"),
     ("cheque_bounce", "monetary_civil", "Cheque Dishonour",
@@ -78,6 +80,8 @@ EVIDENCE_PATTERNS = {
 MISSING_PROOF_BY_CATEGORY = {
     "rental_deposit":       ["Rent / leave-and-licence agreement", "Proof of deposit payment",
                              "Move-out notice and key handover record", "Move-out photos of the premises"],
+    "unpaid_rent":          ["Rent / leave-and-licence agreement", "Rent ledger or statement of arrears",
+                             "Rent demand reminders sent to the tenant", "Proof of the tenant's possession"],
     "unpaid_salary":        ["Offer / appointment letter", "Salary slips and bank statements",
                              "Attendance or work records for the unpaid period", "Resignation/relieving correspondence"],
     "wrongful_termination": ["Appointment letter and service rules", "Termination letter or message",
@@ -106,6 +110,14 @@ LAWS_BY_CATEGORY = {
          "State tenancy law governing security deposits and landlord-tenant obligations.", "SECONDARY"),
         ("Transfer of Property Act, 1882", "Section 108",
          "Rights and liabilities of lessor and lessee, including return of property and dues.", "SUPPORTING"),
+    ],
+    "unpaid_rent": [
+        ("Indian Contract Act, 1872", "Section 73",
+         "Compensation for the tenant's breach of the obligation to pay rent.", "PRIMARY"),
+        ("{rent_act}", "Rent and arrears provisions",
+         "State tenancy law governing payment of rent and recovery of arrears.", "SECONDARY"),
+        ("Transfer of Property Act, 1882", "Section 108",
+         "The lessee's duty to pay rent at the proper time and place.", "SUPPORTING"),
     ],
     "unpaid_salary": [
         ("Code on Wages, 2019", "Payment of wages and claims (earlier Payment of Wages Act 1936, S.15)",

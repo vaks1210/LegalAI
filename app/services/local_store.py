@@ -94,7 +94,7 @@ class LocalContainer:
 
 
 class LocalDocumentStore:
-    CONTAINERS = ("cases", "users", "negotiations", "documents")
+    CONTAINERS = ("cases", "users", "negotiations", "documents", "organizations")
 
     def __init__(self, path: str):
         if path != ":memory:":

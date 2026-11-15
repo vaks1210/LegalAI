@@ -34,6 +34,7 @@ class CosmosService:
             self.users        = store.container("users")
             self.negotiations = store.container("negotiations")
             self.documents    = store.container("documents")
+            self.organizations = store.container("organizations")
         else:
             self.client = CosmosClient.from_connection_string(
                 settings.COSMOS_CONNECTION_STRING
@@ -43,6 +44,7 @@ class CosmosService:
             self.users        = self.db.get_container_client("users")
             self.negotiations = self.db.get_container_client("negotiations")
             self.documents    = self.db.get_container_client("documents")
+            self.organizations = self.db.get_container_client("organizations")
 
     def ping(self) -> str:
         if self.local:
@@ -434,6 +436,75 @@ class CosmosService:
         return self._mutate_negotiation(
             neg_id, lambda neg: neg.setdefault("shared_notes", []).append(note)
         )
+
+    # ── Organisations (B2B tenants) ───────────────────────────
+
+    def create_org(self, data: dict) -> dict:
+        org = {"id": self._new_id(), "created_at": self._now(), **data}
+        self.organizations.create_item(body=org)
+        return org
+
+    def get_org(self, org_id: str) -> Optional[dict]:
+        try:
+            return self.organizations.read_item(item=org_id, partition_key=org_id)
+        except NOT_FOUND:
+            return None
+
+    def mutate_org(self, org_id: str, fn) -> dict:
+        def apply(org):
+            fn(org)
+            org["updated_at"] = self._now()
+        return self._mutate(self.organizations, org_id, apply)
+
+    def get_orgs_for_member(self, email: str) -> list:
+        email = email.lower()
+        if self.local:
+            return self.organizations.find(
+                lambda o: any(m.get("email") == email for m in o.get("members", []))
+            )
+        q = ("SELECT * FROM c WHERE EXISTS("
+             "SELECT VALUE m FROM m IN c.members WHERE m.email = @e)")
+        return list(self.organizations.query_items(
+            query=q, parameters=[{"name": "@e", "value": email}],
+            enable_cross_partition_query=True,
+        ))
+
+    def get_org_by_api_key_hash(self, key_hash: str) -> Optional[dict]:
+        if self.local:
+            r = self.organizations.find(
+                lambda o: any(k.get("hash") == key_hash and not k.get("revoked")
+                              for k in o.get("api_keys", []))
+            )
+            return r[0] if r else None
+        q = ("SELECT * FROM c WHERE EXISTS(SELECT VALUE k FROM k IN c.api_keys "
+             "WHERE k.hash = @h AND NOT IS_DEFINED(k.revoked))")
+        r = list(self.organizations.query_items(
+            query=q, parameters=[{"name": "@h", "value": key_hash}],
+            enable_cross_partition_query=True,
+        ))
+        return r[0] if r else None
+
+    def get_cases_by_org(self, org_id: str) -> list:
+        if self.local:
+            return self.cases.find(lambda c: c.get("org_id") == org_id,
+                                   sort_key="created_at", descending=True)
+        q = "SELECT * FROM c WHERE c.org_id = @o ORDER BY c.created_at DESC"
+        return list(self.cases.query_items(
+            query=q, parameters=[{"name": "@o", "value": org_id}],
+            enable_cross_partition_query=True,
+        ))
+
+    def find_org_case_by_reference(self, org_id: str, reference: str) -> Optional[dict]:
+        if self.local:
+            r = self.cases.find(lambda c: c.get("org_id") == org_id
+                                and c.get("external_reference") == reference)
+            return r[0] if r else None
+        q = "SELECT * FROM c WHERE c.org_id = @o AND c.external_reference = @r"
+        r = list(self.cases.query_items(
+            query=q, parameters=[{"name": "@o", "value": org_id}, {"name": "@r", "value": reference}],
+            enable_cross_partition_query=True,
+        ))
+        return r[0] if r else None
 
     # ── Documents ─────────────────────────────────────────────
 

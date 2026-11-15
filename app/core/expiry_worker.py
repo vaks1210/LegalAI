@@ -85,8 +85,11 @@ async def _handle_expired_case(case: dict):
 async def _resume_analysis(case_id: str, case: dict):
     """Analysis was interrupted (e.g. server restart) — run it again."""
     logger.warning(f"Resuming interrupted analysis | case_id={case_id}")
-    from app.routers.cases import _run_full_pipeline
-    await _run_full_pipeline(case_id)
+    from app.routers.cases import _run_full_pipeline, analyse_new_case
+    if not case.get("track"):          # bulk-filed case interrupted before routing
+        await analyse_new_case(case_id)
+    else:
+        await _run_full_pipeline(case_id)
 
 
 async def _resume_mediation(case_id: str, case: dict):

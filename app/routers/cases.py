@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.background import in_thread
 from app.agents.strategy_agent import generate_case_strategy
 from app.config import settings
+from app.core.access import is_claimant_side, require_claimant_side, require_party
 from app.core.case_router import route_case
 from app.core.dependencies import get_current_user
 from app.core.uploads import MAX_UPLOAD_BYTES, validate_upload
@@ -72,18 +73,10 @@ async def submit_case(
     cosmos_service.transition_case(case_id, CaseStatus.ANALYZING)
 
     # 6. Fast case router (sync)
-    routing = await run_in_threadpool(
-        route_case,
-        dispute_text=body.dispute_text,
-        claim_amount=body.claim_amount,
-        respondent_type=body.respondent_type.value,
-        claimant_state=body.claimant_state,
-    )
-    cosmos_service.update_case(case_id, {"track": routing["track"], "routing": routing})
+    routing, is_criminal = await run_in_threadpool(route_new_case, case_id)
 
     # 7. Criminal → no mediation
-    if routing.get("is_criminal") or routing["track"] == "criminal":
-        cosmos_service.transition_case(case_id, CaseStatus.CRIMINAL_ADVISORY)
+    if is_criminal:
         background_tasks.add_task(in_thread(_handle_criminal_advisory), case_id)
         return {
             "case_id": case_id,
@@ -109,6 +102,51 @@ async def submit_case(
 # ─────────────────────────────────────────────────────────────
 # BACKGROUND PIPELINE
 # ─────────────────────────────────────────────────────────────
+
+def route_new_case(case_id: str) -> tuple[dict, bool]:
+    """
+    Classify a freshly created (ANALYZING) case into a track. Criminal
+    matters go straight to CRIMINAL_ADVISORY — never to mediation.
+    Shared by single submission and bulk filing.
+    """
+    case = cosmos_service.get_case(case_id)
+    routing = route_case(
+        dispute_text=case["dispute_text"],
+        claim_amount=case.get("claim_amount"),
+        respondent_type=case.get("respondent_type") or "individual",
+        claimant_state=case.get("claimant_state") or "",
+    )
+    cosmos_service.update_case(case_id, {"track": routing["track"], "routing": routing})
+    is_criminal = bool(routing.get("is_criminal")) or routing["track"] == "criminal"
+    if is_criminal:
+        cosmos_service.transition_case(case_id, CaseStatus.CRIMINAL_ADVISORY)
+    return routing, is_criminal
+
+
+async def analyse_new_case(case_id: str) -> None:
+    """Route + full analysis for a case created without routing (bulk filing)."""
+    _, is_criminal = route_new_case(case_id)
+    if is_criminal:
+        await _handle_criminal_advisory(case_id)
+    else:
+        await _run_full_pipeline(case_id)
+
+
+def deliver_invite(case: dict) -> bool:
+    """Email the respondent their signed portal link and mark INVITE_SENT."""
+    sent = email_service.send_case_invite(
+        to_email=case["respondent_email"],
+        respondent_name=case["respondent_name"],
+        claimant_name=case["claimant_name"],
+        case_id=case["id"],
+        claim_amount=case.get("claim_amount"),
+        dispute_summary=case["dispute_text"],
+    )
+    if not sent:
+        return False
+    cosmos_service.transition_case(case["id"], CaseStatus.INVITE_SENT)
+    return True
+
 
 async def _handle_criminal_advisory(case_id: str):
     """Runs intake + legal + document agents for criminal track."""
@@ -197,7 +235,7 @@ async def get_my_cases(current_user: dict = Depends(get_current_user)):
     email = current_user["email"].lower()
     cases = []
     for c in cosmos_service.get_cases_by_email(email):
-        if (c.get("claimant_email") or "").lower() == email:
+        if is_claimant_side(c, current_user):
             cases.append(refresh_case_urls(c))
         else:
             # The user is the respondent: never return the claimant's private analysis.
@@ -232,8 +270,7 @@ async def get_case(case_id: str, current_user: dict = Depends(get_current_user))
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     return refresh_case_urls(case)
 
 
@@ -254,8 +291,7 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     if case["status"] != CaseStatus.ANALYZED.value:
         raise HTTPException(
             status_code=409,
@@ -306,8 +342,7 @@ async def resend_invite(case_id: str, current_user: dict = Depends(get_current_u
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     status = CaseStatus(case["status"])
     if status in TERMINAL_STATES or status in (
         CaseStatus.SUBMITTED, CaseStatus.ANALYZING, CaseStatus.ANALYZED,
@@ -344,8 +379,7 @@ async def upload_evidence(
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     original_name, content_type = validate_upload(file.filename, content)
@@ -381,8 +415,7 @@ async def generate_strategy(case_id: str, current_user: dict = Depends(get_curre
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     strategy = await run_in_threadpool(generate_case_strategy, case)
     cosmos_service.update_case(case_id, {"strategy_data": strategy})
@@ -410,8 +443,7 @@ async def confirm_payment(
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     if case["status"] != CaseStatus.SETTLED.value:
         raise HTTPException(status_code=409, detail="Payment confirmation only available for SETTLED cases.")
 
@@ -478,9 +510,7 @@ async def get_mediation_certificate(case_id: str, current_user: dict = Depends(g
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"].lower() != current_user["email"].lower() and
-            case["respondent_email"].lower() != current_user["email"].lower()):
-        raise UnauthorizedAccess()
+    require_party(case, current_user)
 
     docs_data = case.get("documents_data") or {}
     url = docs_data.get("mediation_certificate_url")
@@ -515,9 +545,7 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"].lower() != current_user["email"].lower() and
-            case["respondent_email"].lower() != current_user["email"].lower()):
-        raise UnauthorizedAccess()
+    require_party(case, current_user)
 
     neg    = cosmos_service.get_negotiation_by_case(case_id)
     rounds = neg.get("rounds", []) if neg else []

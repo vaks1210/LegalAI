@@ -8,6 +8,7 @@ from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, InvalidCaseState, UnauthorizedAccess
+from app.core.access import require_claimant_side
 from app.core.negotiation_rules import check_direct_settlement
 from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
@@ -374,8 +375,7 @@ async def submit_claimant_offer(
     case = cosmos_service.get_case(body.case_id)
     if not case:
         raise CaseNotFound(body.case_id)
-    if case.get("claimant_email") != current_user.get("email"):
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     valid_states = {
         CaseStatus.ANALYZED.value,
@@ -566,8 +566,7 @@ async def proposal_response(
         # Previously an unauthenticated request could decide as the claimant.
         if not current_user:
             raise HTTPException(status_code=401, detail="Login required to respond as claimant.")
-        if current_user["email"].lower() != case["claimant_email"].lower():
-            raise UnauthorizedAccess()
+        require_claimant_side(case, current_user)
     elif body.party == "respondent":
         _require_respondent(case, body.respondent_token)
 
@@ -851,8 +850,7 @@ async def proof_response(
         raise CaseNotFound(body.case_id)
 
     if body.party == "claimant":
-        if not current_user or current_user["email"].lower() != case["claimant_email"].lower():
-            raise UnauthorizedAccess()
+        require_claimant_side(case, current_user)
     elif body.party == "respondent":
         _require_respondent(case, body.respondent_token)
     else:
@@ -933,8 +931,7 @@ async def get_negotiation_status(
 
     # Only the authenticated claimant gets the full negotiation status here
     # (it includes both parties' offers). Respondents use GET /api/respondent/case/{id}.
-    if (current_user.get("email") or "").lower() != (case.get("claimant_email") or "").lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     neg          = cosmos_service.get_negotiation_by_case(case_id)
     round_number = case.get("current_round", 0)
