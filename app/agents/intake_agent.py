@@ -23,7 +23,7 @@ SEVERITY LEVELS — apply precisely:
   LOW:      Amount < Rs.10,000 OR minor inconvenience, no ongoing harm, weak legal basis
   MEDIUM:   Amount Rs.10,000–Rs.2,00,000 OR moderate harm, clear legal basis
   HIGH:     Amount > Rs.2,00,000 OR significant ongoing harm, strong legal basis
-  CRIMINAL: Any violence / assault / threat / fraud (IPC 420) / sexual offence — regardless of amount
+  CRIMINAL: Any violence / assault / threat / fraud (BNS S.318, earlier IPC 420) / sexual offence — regardless of amount
 
 LIMITATION ACT 1963 — apply strictly:
   Contract breach, rent deposit, salary arrears:    3 years from date of cause of action

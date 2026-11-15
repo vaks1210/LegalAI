@@ -141,7 +141,7 @@ REASONING RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 The "reasoning" field is shown to BOTH parties:
 - Explain why the proposed actions are fair and proportionate
-- Reference relevant Indian law (IPC section, Noise Pollution Rules, IT Act, etc.)
+- Reference relevant Indian law (BNS section — the IPC was replaced on 1 July 2024, Noise Pollution Rules, IT Act, etc.)
 - Note what legal remedy the claimant would pursue if this mediation fails
 - For Round 3: "This is the final proposal. Non-compliance will result in [specific legal step]."
 

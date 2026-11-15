@@ -195,6 +195,21 @@ LAWS_BY_CATEGORY = {
     ],
 }
 
+# Criminal element -> sections to cite in the FIR (BNS in force since 1 July 2024).
+CRIMINAL_SECTIONS = {
+    "physical violence":   ["BNS S.115(2) voluntarily causing hurt (earlier IPC 323)",
+                            "BNS S.118(1) hurt by dangerous weapon (earlier IPC 324)"],
+    "threats":             ["BNS S.351 criminal intimidation (earlier IPC 506)"],
+    "sexual harassment":   ["BNS S.75 sexual harassment (earlier IPC 354A)",
+                            "BNS S.74 assault on a woman (earlier IPC 354)"],
+    "stalking":            ["BNS S.78 stalking (earlier IPC 354D)"],
+    "domestic violence":   ["BNS S.85 cruelty by husband or relatives (earlier IPC 498A)",
+                            "Protection of Women from Domestic Violence Act 2005, S.12 and S.18"],
+    "cybercrime":          ["IT Act 2000 S.66C identity theft", "IT Act 2000 S.66D cheating by personation",
+                            "BNS S.318 cheating (earlier IPC 420)"],
+    "forgery / extortion": ["BNS S.308 extortion (earlier IPC 384)", "BNS S.336 forgery (earlier IPC 465)"],
+}
+
 FORUM_BY_TRACK = {
     "monetary_civil": ("civil_court", "District Civil Court / Small Causes Court"),
     "employment":     ("labour_court", "Labour Court / Wage Authority"),
@@ -378,6 +393,17 @@ def intake(case: dict, track: str) -> dict:
     }
 
 
+def _criminal_sections(case: dict) -> list:
+    elements = (case.get("routing") or {}).get("criminal_elements") \
+        or detect_criminal_elements(case.get("dispute_text", ""))
+    sections = []
+    for el in elements:
+        for sec in CRIMINAL_SECTIONS.get(el, []):
+            if sec not in sections:
+                sections.append(sec)
+    return sections
+
+
 def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
     intake_data = intake_data or {}
     category = "criminal" if track == "criminal" else intake_data.get("dispute_category", "other")
@@ -452,6 +478,7 @@ def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
         "recommended_immediate_actions": immediate,
         "total_statutory_dues":    0,
         "statutory_entitlements":  {},
+        "ipc_sections":            _criminal_sections(case) if track == "criminal" else [],
         "analysis_mode":           "rule_based",
     }
 

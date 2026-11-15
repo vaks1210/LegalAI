@@ -897,12 +897,16 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
 
 FIR_ADVISORY_PROMPT = """
 You are a senior Indian criminal lawyer providing advisory for FIR filing.
+For incidents on or after 1 July 2024 cite the Bharatiya Nyaya Sanhita (BNS) and
+Bharatiya Nagarik Suraksha Sanhita (BNSS); for earlier incidents cite the IPC/CrPC.
+Give the other code's equivalent in brackets, e.g. "BNS S.115(2) (earlier IPC 323)".
+An FIR is registered under BNSS S.173; a Zero FIR can be filed at any police station.
 
 Respond ONLY in JSON:
 {
   "advisory_summary": "2 sentences explaining situation and recommendation",
   "ipc_sections_to_cite": [
-    {"section": "IPC 323", "title": "Voluntarily causing hurt",
+    {"section": "BNS S.115(2) (earlier IPC 323)", "title": "Voluntarily causing hurt",
      "explanation": "Why this applies"}
   ],
   "fir_draft_points": [
@@ -914,8 +918,8 @@ Respond ONLY in JSON:
   "evidence_to_collect": ["evidence 1", "evidence 2"],
   "immediate_safety_steps": ["step 1 if danger"],
   "support_resources": [
-    {"name": "Police Emergency", "contact": "100"},
-    {"name": "NCW Helpline", "contact": "181"}
+    {"name": "Emergency (ERSS)", "contact": "112"},
+    {"name": "Women Helpline", "contact": "181"}
   ],
   "mediation_note": "Why this case cannot be mediated"
 }
@@ -935,7 +939,7 @@ Claimant: {case['claimant_name']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Criminal elements identified: {intake.get('criminal_elements', [])}
 Immediate danger: {intake.get('immediate_danger', False)}
-IPC sections: {legal.get('ipc_sections', [])}
+Criminal law sections (BNS / IPC): {legal.get('ipc_sections', [])}
 Recommended authority: {intake.get('recommended_authority', 'local_police')}
 """
 
@@ -957,8 +961,8 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
             "evidence_to_collect": ["All relevant documents", "Photographs if any"],
             "immediate_safety_steps": ["Contact police if in immediate danger"],
             "support_resources": [
-                {"name": "Police Emergency", "contact": "100"},
-                {"name": "NCW Helpline", "contact": "181"},
+                {"name": "Emergency (ERSS)", "contact": "112"},
+                {"name": "Women Helpline", "contact": "181"},
             ],
             "mediation_note": "Criminal matters cannot be mediated.",
         }
@@ -999,7 +1003,7 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
     # IPC Sections
     ipc_sections = content.get("ipc_sections_to_cite", [])
     if ipc_sections:
-        story.append(_section_heading("Applicable IPC Sections", ORANGE))
+        story.append(_section_heading("Applicable Criminal Law Sections (BNS / earlier IPC)", ORANGE))
         for sec in ipc_sections:
             if isinstance(sec, dict):
                 story.append(_bullet(

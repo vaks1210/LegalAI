@@ -86,3 +86,24 @@ def test_defamation_without_money_is_non_monetary():
     r = oa.route("My colleague posted false allegations about me online damaging my reputation. "
                  "I want the post removed and a public apology.", None, "individual", "Delhi")
     assert r["track"] == "non_monetary"
+
+
+def test_criminal_advisory_cites_current_bns_sections():
+    text = "My neighbour attacked me with a rod and threatened to kill me if I complain."
+    case = {"dispute_text": text, "claimant_state": "Delhi", "claimant_city": "Delhi",
+            "routing": oa.route(text, None, "individual", "Delhi")}
+    legal = oa.legal(case, "criminal", oa.intake(case, "criminal"))
+    joined = " ".join(legal["ipc_sections"])
+    assert "BNS S.115(2)" in joined and "BNS S.351" in joined
+    assert "earlier IPC 323" in joined
+
+
+def test_prompts_do_not_cite_struck_down_or_repealed_provisions_as_current():
+    import app.agents.legal_agent as la
+    text = la.CRIMINAL_PROMPT
+    assert "CrPC S.154 —" not in text and "Police Emergency: 100" not in text
+    assert "BNSS S.173" in text
+    # S.66A IT Act was struck down in 2015 and must only appear as a warning.
+    for prompt in (getattr(la, n) for n in dir(la) if n.endswith("_PROMPT")):
+        if "66A" in prompt:
+            assert "struck down" in prompt

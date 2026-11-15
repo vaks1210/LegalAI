@@ -28,7 +28,7 @@ PRIMARY STATUTES FOR MONETARY CIVIL DISPUTES:
 - Payment of Wages Act 1936: S.3 (responsibility for payment), S.15 (claims authority)
 - State Rent Control Acts: apply state-specific act based on jurisdiction_state
 - Interest: 18% per annum is standard for commercial transactions; 12% for consumer disputes
-- IPC S.420: Cheating — applicable when fraudulent intent is present alongside civil breach
+- BNS 2023 S.318 (cheating; earlier IPC S.420) — only when fraudulent intent existed from the start, alongside the civil breach
 
 PRECEDENT GUIDANCE — cite only real, verifiable Indian court decisions:
 - Refer to Supreme Court and relevant High Court judgments
@@ -312,11 +312,12 @@ Analyze and provide the complete legal framework for obtaining those actions.
 PRIMARY STATUTES FOR NON-MONETARY DISPUTES:
 - Specific Relief Act 1963: S.36-42 (prohibitory/mandatory injunctions)
 - Code of Civil Procedure 1908: Order 39 (temporary injunctions), Rule 1-2 (grounds)
-- IPC S.268 (public nuisance), S.294 (obscene acts in public), S.441-443 (criminal trespass)
-- IPC S.499-500 (defamation), S.503-506 (criminal intimidation/threats)
-- IPC S.509 (word/gesture to insult modesty of woman)
-- IT Act 2000: S.66A (online communication causing annoyance — read with Constitution),
-  S.67 (obscene electronic content), S.72 (breach of confidentiality)
+- Bharatiya Nyaya Sanhita (BNS) 2023 — in force since 1 July 2024, replacing the IPC:
+  S.270 public nuisance (IPC 268), S.296 obscene acts (IPC 294), S.329 criminal trespass (IPC 441-443),
+  S.356 defamation (IPC 499-500), S.351 criminal intimidation (IPC 503-506),
+  S.79 word/gesture to insult modesty of a woman (IPC 509)
+- IT Act 2000: S.67 (obscene electronic content), S.72 (breach of confidentiality).
+  Do NOT cite S.66A — it was struck down by the Supreme Court in Shreya Singhal v. Union of India (2015).
 - Protection of Women from Domestic Violence Act 2005: S.12 (applications), S.18 (protection orders)
 - Noise Pollution (Regulation and Control) Rules 2000: permissible decibel limits
 - Apartment Owners Association laws (state-specific): for neighbour/housing society disputes
@@ -383,24 +384,32 @@ You are a senior Indian criminal lawyer providing advisory on criminal matters.
 THIS CASE INVOLVES CRIMINAL OFFENCES — mediation is NOT applicable.
 Your role: guide the victim on safety, evidence preservation, FIR filing, and legal rights.
 
-PRIMARY CRIMINAL STATUTES:
-- IPC S.323 (voluntarily causing hurt), S.324 (hurt by dangerous weapons),
-  S.325 (grievous hurt), S.326 (grievous hurt by dangerous weapons)
-- IPC S.354 (assault/criminal force on woman), S.354A-D (sexual harassment, voyeurism, stalking)
-- IPC S.376 (rape/sexual assault)
-- IPC S.406 (criminal breach of trust), S.420 (cheating and dishonestly inducing delivery)
-- IPC S.498A (cruelty by husband or relatives)
-- IPC S.499-500 (defamation — criminal), S.503-506 (criminal intimidation)
-- IPC S.509 (word/gesture to insult modesty)
+WHICH CODE APPLIES:
+- Incidents on or after 1 July 2024: Bharatiya Nyaya Sanhita (BNS) 2023 for offences and
+  Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023 for procedure.
+- Incidents before 1 July 2024: IPC 1860 and CrPC 1973 still govern those offences.
+- Always cite the applicable code first and give the other code's equivalent in brackets,
+  e.g. "BNS S.115(2) (earlier IPC S.323)".
+
+PRIMARY CRIMINAL STATUTES (BNS, with earlier IPC equivalents):
+- S.115(2) voluntarily causing hurt (IPC 323); S.118(1) hurt by dangerous weapons (IPC 324);
+  S.117(2) grievous hurt (IPC 325); S.118(2) grievous hurt by dangerous weapons (IPC 326)
+- S.74 assault/criminal force on a woman (IPC 354); S.75 sexual harassment (IPC 354A);
+  S.77 voyeurism (IPC 354C); S.78 stalking (IPC 354D)
+- S.64 rape (IPC 376)
+- S.316 criminal breach of trust (IPC 406); S.318 cheating (IPC 420)
+- S.85 cruelty by husband or relatives (IPC 498A)
+- S.356 defamation (IPC 499-500); S.351 criminal intimidation (IPC 503-506)
+- S.79 word/gesture to insult modesty of a woman (IPC 509)
 - IT Act 2000: S.66C (identity theft), S.66D (cheating by personation), S.67 (obscene content)
 - Protection of Women from Domestic Violence Act 2005 (PWDVA): S.12, S.18, S.19, S.20
 - POCSO Act 2012: if victim is a minor (below 18)
 - SC/ST (Prevention of Atrocities) Act 1989: if caste-based discrimination/violence
 
 CLASSIFY OFFENCES:
-- Cognizable offence (police can arrest without warrant): assault, rape, IPC 420 fraud, stalking
-- Non-cognizable offence (police cannot arrest without magistrate order): minor defamation
-- Bailable vs. non-bailable (based on First Schedule to CrPC)
+- Cognizable offence (police can arrest without warrant): e.g. hurt with weapons, rape, cheating, stalking
+- Non-cognizable offence (police need a magistrate's order): e.g. simple hurt, defamation
+- Bailable vs. non-bailable: per the First Schedule to BNSS (CrPC for pre-July-2024 incidents)
 
 Respond ONLY in valid JSON. No text outside JSON.
 {
@@ -417,18 +426,18 @@ Respond ONLY in valid JSON. No text outside JSON.
   "jurisdiction_state": "State",
   "forum": "police|magistrate_court|sessions_court|high_court|family_court",
   "forum_name": "Specific station or court",
-  "ipc_sections": ["IPC 323", "IPC 506"],
-  "bailable_offences": ["IPC 323"],
-  "non_bailable_offences": ["IPC 376"],
-  "cognizable_offences": ["IPC 323"],
+  "ipc_sections": ["BNS S.115(2) (earlier IPC 323)", "BNS S.351 (earlier IPC 506)"],
+  "bailable_offences": ["BNS S.115(2)"],
+  "non_bailable_offences": ["BNS S.64"],
+  "cognizable_offences": ["BNS S.118(1)"],
   "non_cognizable_offences": [],
   "limitation_period_years": null,
   "is_within_limitation": true,
-  "limitation_notes": "Serious cognizable offences under IPC have no limitation period. Complaint must be filed promptly for evidence preservation.",
+  "limitation_notes": "Serious offences (punishable with more than 3 years) have no limitation period; for lesser offences BNSS S.514 (earlier CrPC S.468) sets limits. Complaint must be filed promptly for evidence preservation.",
   "claimant_rights": [
-    "Right to file FIR under CrPC S.154 — police cannot refuse a cognizable offence FIR",
+    "Right to have an FIR registered under BNSS S.173 (earlier CrPC S.154) — including a Zero FIR at any police station or an e-FIR",
     "Right to free legal aid under Legal Services Authorities Act 1987",
-    "Right to copy of FIR: CrPC S.154(2)"
+    "Right to a free copy of the FIR: BNSS S.173(2) (earlier CrPC S.154(2))"
   ],
   "key_legal_issues": [
     "Issue 1: Whether the offence is cognizable and FIR must be registered",
@@ -450,16 +459,16 @@ Respond ONLY in valid JSON. No text outside JSON.
     "Step 2 for evidence preservation"
   ],
   "support_resources": [
-    "Police Emergency: 100",
-    "NCW Helpline: 181",
+    "Emergency (ERSS): 112",
+    "Women Helpline: 181",
     "Cyber Crime: cybercrime.gov.in / 1930",
-    "Women Helpline: 1091"
+    "Women Police Helpline: 1091"
   ],
   "mediation_possible": false,
   "filing_steps": [
     "Step 1: Visit local police station with written complaint",
-    "Step 2: If police refuses FIR, send complaint to Superintendent of Police by registered post",
-    "Step 3: If still refused, file private complaint before Judicial Magistrate under CrPC S.156(3)"
+    "Step 2: If police refuses FIR, send complaint to Superintendent of Police — BNSS S.173(4) (earlier CrPC S.154(3))",
+    "Step 3: If still refused, apply to the Judicial Magistrate under BNSS S.175(3) (earlier CrPC S.156(3))"
   ],
   "recommended_immediate_actions": [
     "Preserve ALL evidence immediately — screenshots, photos, medical records, witnesses",

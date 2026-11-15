@@ -1513,7 +1513,7 @@ async function uploadLiveEvidence(caseId) {
 function renderCriminalAdvisory(i, l) {
   return `
     <div style="margin-top:16px;">
-      <div class="section-title">IPC Sections</div>
+      <div class="section-title">Criminal Law Sections (BNS / earlier IPC)</div>
       ${(i.criminal_sections_likely || l.ipc_sections || []).map(s =>
         `<span class="law-tag" style="background:#FEE2E2;color:#7F1D1D;">${s}</span>`
       ).join('')}
