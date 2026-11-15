@@ -1,6 +1,7 @@
 import hmac
 import logging
 from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.config import settings
 from app.core.security import (
@@ -11,9 +12,11 @@ from app.core.security import (
 )
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.services import account_service
 from app.core.dependencies import get_current_user
 from app.core.disclaimer import (
     DPDP_CONSENT_TEXT,
+    DATA_RETENTION_NOTICE,
     AI_DISCLAIMER_TEXT,
     SETTLEMENT_DISCLAIMER,
 )
@@ -182,6 +185,54 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     }
 
 
+class AccountDeletion(BaseModel):
+    # The account's email, typed by the user: guards against accidental calls.
+    confirm_email: str
+
+
+@router.get("/me/export")
+async def export_my_data(current_user: dict = Depends(get_current_user)):
+    """
+    DPDP right of access: the user's profile and their cases, as a JSON
+    download. Cases where the user is the respondent use the respondent view.
+    """
+    data = account_service.export_user_data(current_user)
+    logger.info(f"Data export | email={current_user['email']}")
+    return JSONResponse(
+        content=data,
+        headers={
+            "Content-Disposition": 'attachment; filename="legalai-my-data.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.delete("/me")
+async def delete_my_account(
+    body: AccountDeletion,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    DPDP right of erasure. Deletes the profile, OTP records and every claimant
+    case that never reached the respondent (with its files). Cases that
+    reached the respondent are kept with the claimant's phone removed and
+    name redacted. See app/services/account_service.py for the policy.
+    """
+    if body.confirm_email.strip().lower() != current_user["email"].lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Type your account email exactly to confirm deletion.",
+        )
+    summary = account_service.erase_user(current_user)
+    return {
+        "message": "Your account has been deleted.",
+        "deleted_cases": len(summary["deleted_case_ids"]),
+        "retained_cases": len(summary["retained_case_ids"]),
+        "retention_notice": DATA_RETENTION_NOTICE,
+        **({"files_pending_deletion": summary["files_failed"]} if summary["files_failed"] else {}),
+    }
+
+
 @router.post("/logout")
 async def logout(current_user: dict = Depends(get_current_user)):
     logger.info(f"User logged out | email={current_user['email']}")
@@ -192,6 +243,7 @@ async def logout(current_user: dict = Depends(get_current_user)):
 async def get_disclaimers():
     return {
         "dpdp_consent":      DPDP_CONSENT_TEXT,
+        "data_retention":    DATA_RETENTION_NOTICE,
         "ai_disclaimer":     AI_DISCLAIMER_TEXT,
         "settlement_notice": SETTLEMENT_DISCLAIMER,
     }

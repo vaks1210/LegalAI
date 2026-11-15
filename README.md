@@ -137,6 +137,7 @@ legalai-resolver/
 │   │   ├── openai_service.py      # Azure OpenAI wrapper with retry logic
 │   │   ├── cosmos_service.py      # Full DB layer + state machine integration
 │   │   ├── blob_service.py        # Upload + time-limited SAS URL generation
+│   │   ├── account_service.py     # DPDP data export + account erasure
 │   │   ├── email_service.py       # All 10 branded HTML email templates
 │   │   └── content_safety.py      # Input filtering + abuse pattern detection
 │   │
@@ -147,7 +148,7 @@ legalai-resolver/
 │   │   ├── expiry_worker.py       # Hourly deadline enforcement (6 expiry handlers)
 │   │   ├── rate_limiter.py        # Per-endpoint in-memory rate limiting
 │   │   ├── security_headers.py    # X-Frame-Options, HSTS, XSS headers
-│   │   └── disclaimer.py          # DPDP + AI disclaimer constants
+│   │   └── disclaimer.py          # DPDP consent, retention notice + AI disclaimer constants
 │   │
 │   └── models/
 │       ├── case.py                # CaseStatus (18 states), CaseTrack, Pydantic models
@@ -423,6 +424,8 @@ curl https://legalai-resolver.azurewebsites.net/health
 | `POST` | `/api/auth/request-otp` | Send 6-digit OTP to email | None |
 | `POST` | `/api/auth/verify-otp` | Verify OTP → returns JWT | None |
 | `GET` | `/api/auth/me` | Get current user profile | JWT |
+| `GET` | `/api/auth/me/export` | Download your profile + cases as JSON (DPDP right of access) | JWT |
+| `DELETE` | `/api/auth/me` | Erase your account — body `{"confirm_email": "<your email>"}` (DPDP right of erasure; see [Data rights](#-data-rights-dpdp)) | JWT |
 | `POST` | `/api/cases/submit` | Submit dispute, trigger 5-agent pipeline | JWT |
 | `GET` | `/api/cases/{id}/status` | Poll case status (used for frontend polling) | None |
 | `GET` | `/api/cases/{id}` | Full case data including agent outputs | JWT |
@@ -480,7 +483,26 @@ curl https://legalai-resolver.azurewebsites.net/health
 | File downloads | Time-limited SAS URLs (Azure) or HMAC-signed expiring links (local), re-signed on every read |
 | Criminal safety net | Violence / threats / stalking are routed to FIR advisory, never mediation — even when the LLM is unavailable |
 | Respondent privacy | Analytics, ZOPA, win probability hidden from respondent |
-| DPDP compliance | Explicit consent + disclaimer required before case submission |
+| DPDP compliance | Explicit consent + disclaimer required before case submission; self-service data export and erasure (see below) |
+
+### 🧾 Data rights (DPDP)
+
+Signed-in users can exercise their data-principal rights from the **Account** menu in the web app.
+
+**Download my data** (`GET /api/auth/me/export`) returns a JSON file with the user's profile and:
+- cases they filed, as the claimant sees them (including their own AI analysis);
+- cases where they are the respondent, **only in the respondent view**. The claimant's private analysis, phone and email are never included.
+
+**Delete my account** (`DELETE /api/auth/me`, confirmed by typing the account email) applies this retention policy, approved by the product owner:
+
+| Data | What happens |
+|---|---|
+| Profile, login codes, OTP-throttle record | Deleted |
+| Cases filed by the user that never reached the respondent (`SUBMITTED`, `ANALYZING`, `ANALYZED`, `ABANDONED`, `CRIMINAL_ADVISORY`) | Deleted, with the negotiation, document records, email logs, uploaded evidence and generated PDFs |
+| Cases filed by the user that reached the respondent (invite sent or later) | **Kept**, because they are also the other party's record and may be needed in legal proceedings. The claimant's phone is removed and their name becomes `[erased]`. Their email (which the other party already holds) and city/state (which decide the forum) remain. Documents already generated keep their original contents. |
+| Cases where the user is the respondent | Not changed (they belong to the claimant) |
+
+The same notice is shown in the deletion dialog and returned by `GET /api/auth/disclaimers` (`data_retention`), and the consent text tells users about it when they agree. The policy is implemented in `app/services/account_service.py`.
 
 ---
 
@@ -491,7 +513,7 @@ curl https://legalai-resolver.azurewebsites.net/health
 - Single-instance design: the rate limiter is in memory and the deadline worker runs in-process — run one instance (`--workers 1`), or move both to shared infrastructure (e.g. Redis + a scheduled job) before scaling out
 - Local mode stores the database and PDFs on disk (`LOCAL_DATA_DIR`) — mount persistent storage, or configure Cosmos DB / Blob Storage, for anything beyond a demo
 - Offline (no-LLM) mode gives a rule-based baseline only — configure an LLM for case-specific reasoning
-- No self-service data export/erasure yet (DPDP data-principal rights) — retention policy for cases involving another party needs a product/legal decision
+- Account erasure leaves retained cases' already-generated PDFs (demand letter, settlement, court file) untouched, so they still show the claimant's name as it was at generation time
 
 ---
 

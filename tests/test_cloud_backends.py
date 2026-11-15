@@ -143,3 +143,57 @@ def test_sendgrid_request_and_failure_handling(monkeypatch):
 
     sent["status"] = 401
     assert svc.send_otp("user@example.com", "123456") is False   # reported, not raised
+
+
+class FakeQueryableContainer(FakeCosmosContainer):
+    """Adds the two query shapes the erasure helpers use, plus deletes/upserts."""
+
+    def query_items(self, query, parameters=(), enable_cross_partition_query=False):
+        p = {x["name"]: x["value"] for x in parameters}
+        with self.lock:
+            docs = [copy.deepcopy(d) for d in self.docs.values()]
+        if "@cid" in p:
+            return [d for d in docs if d.get("case_id") == p["@cid"]]
+        if "@e" in p and "IS_DEFINED(c.otp)" in query:
+            return [d for d in docs if d.get("email") == p["@e"] and "otp" not in d]
+        raise AssertionError(f"unexpected query: {query}")
+
+    def delete_item(self, item, partition_key):
+        with self.lock:
+            if item not in self.docs:
+                raise exceptions.CosmosResourceNotFoundError(message="not found")
+            del self.docs[item]
+
+    def upsert_item(self, body):
+        return self.create_item(body)
+
+
+def test_account_erasure_helpers_on_cosmos(cosmos):
+    for name in ("cases", "users", "negotiations", "documents"):
+        setattr(cosmos, name, FakeQueryableContainer())
+    email = "gone@example.com"
+    cosmos.users.create_item({"id": "u1", "email": email, "phone": "9999999999"})
+    cosmos.save_otp(email, "123456", "2099-01-01T00:00:00+00:00")
+    cosmos.users.create_item({"id": "otpreq_gone_example_com", "requests": []})
+    cosmos.users.create_item({"id": "u2", "email": "keep@example.com"})
+
+    cosmos.cases.create_item({"id": "c1", "claimant_email": email, "claimant_name": "Gone",
+                              "claimant_phone": "9999999999"})
+    cosmos.cases.create_item({"id": "c2", "claimant_email": email, "claimant_name": "Gone",
+                              "claimant_phone": "9999999999"})
+    cosmos.negotiations.create_item({"id": "n1", "case_id": "c1", "rounds": []})
+    cosmos.documents.create_item({"id": "d1", "case_id": "c1", "doc_type": "demand_letter"})
+    cosmos.documents.create_item({"id": "email_1", "case_id": "c1", "to_email": email})
+    cosmos.documents.create_item({"id": "d2", "case_id": "c2", "doc_type": "demand_letter"})
+
+    assert cosmos.delete_user_data(email) == 3
+    assert set(cosmos.users.docs) == {"u2"}
+
+    cosmos.delete_case("c1")
+    assert set(cosmos.cases.docs) == {"c2"}
+    assert cosmos.negotiations.docs == {}
+    assert set(cosmos.documents.docs) == {"d2"}
+
+    kept = cosmos.minimise_claimant_on_case("c2")
+    assert kept["claimant_name"] == "[erased]" and "claimant_phone" not in kept
+    assert kept["claimant_email"] == email
