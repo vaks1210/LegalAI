@@ -98,11 +98,11 @@ Each document has its own AI prompt, visual theme, and legal structure:
 
 | Layer | Technology |
 |---|---|
-| **Backend** | FastAPI · Python 3.11 · 14 REST endpoints |
+| **Backend** | FastAPI · Python 3.11+ · 35+ REST endpoints |
 | **AI / LLM** | Azure OpenAI GPT-4o · GPT-4o-mini |
 | **Database** | Azure Cosmos DB — cases, users, negotiations, documents |
 | **File Storage** | Azure Blob Storage — PDFs, evidence, signed agreements |
-| **Email** | Azure Communication Services — 10 automated triggers |
+| **Email** | SendGrid (local outbox in dev) — automated triggers across the case lifecycle |
 | **PDF Engine** | ReportLab — 6 document types, Unicode-safe `_safe()` processor |
 | **Auth** | Email OTP + JWT — no external auth provider |
 | **Safety** | Azure AI Content Safety — harmful content blocked |
@@ -221,7 +221,7 @@ The suite runs fully offline and walks the whole lifecycle — login → submit 
   - Azure OpenAI (with `gpt-4o` and `gpt-4o-mini` deployments)
   - Azure Cosmos DB (with `legalai-db` database + 4 containers)
   - Azure Blob Storage (with 3 containers)
-  - Azure Communication Services (with verified email domain)
+  - SendGrid account with a verified sender (email)
   - Azure AI Content Safety
 
 ### 1. Clone
@@ -269,9 +269,9 @@ COSMOS_DATABASE_NAME=legalai-db
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;...
 AZURE_STORAGE_ACCOUNT_NAME=your_storage_account_name
 
-# Azure Communication Services
-AZURE_COMM_CONNECTION_STRING=endpoint=https://...;accesskey=...
-AZURE_SENDER_EMAIL=DoNotReply@your-domain.azurecomm.net
+# Email (SendGrid)
+SENDGRID_API_KEY=SG.your_key
+SENDGRID_FROM_EMAIL=noreply@your-verified-domain.com
 
 # Azure AI Content Safety
 CONTENT_SAFETY_KEY=your_key
@@ -374,8 +374,8 @@ az webapp config appsettings set \
     COSMOS_DATABASE_NAME="legalai-db" \
     AZURE_STORAGE_CONNECTION_STRING="your_connection_string" \
     AZURE_STORAGE_ACCOUNT_NAME="your_account_name" \
-    AZURE_COMM_CONNECTION_STRING="your_connection_string" \
-    AZURE_SENDER_EMAIL="DoNotReply@your-domain.azurecomm.net" \
+    SENDGRID_API_KEY="SG.your_key" \
+    SENDGRID_FROM_EMAIL="noreply@your-verified-domain.com" \
     CONTENT_SAFETY_KEY="your_key" \
     CONTENT_SAFETY_ENDPOINT="your_endpoint" \
     JWT_SECRET_KEY="your_64_char_secret" \
