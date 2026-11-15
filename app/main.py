@@ -108,6 +108,11 @@ async def serve_frontend():
     return FileResponse("frontend/index.html")
 
 
+@app.get("/mediator", include_in_schema=False)
+async def serve_mediator_console():
+    return FileResponse("frontend/mediator.html")
+
+
 @app.get("/business", include_in_schema=False)
 async def serve_business_console():
     return FileResponse("frontend/business.html")

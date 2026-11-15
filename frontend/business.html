@@ -215,6 +215,9 @@
         <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:14px;">
           <input type="checkbox" id="sAutoInvite" style="width:auto;"> By default, invite respondents automatically after analysis
         </label>
+        <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:8px;">
+          <input type="checkbox" id="sMediator" style="width:auto;"> Require a human mediator to approve every AI settlement proposal
+        </label>
         <button class="btn" style="margin-top:14px;" onclick="saveSettings()">Save settings</button>
         <div id="settingsMsg"></div>
       </div>
@@ -459,11 +462,12 @@ function renderSettings() {
   $('pUpi').value = unesc(p.upi_id); $('pName').value = unesc(p.account_name);
   $('pAcct').value = unesc(p.account_number); $('pIfsc').value = unesc(p.ifsc); $('pBank').value = unesc(p.bank);
   $('sAutoInvite').checked = !!org.settings?.auto_invite;
+  $('sMediator').checked = !!org.settings?.require_mediator_review;
 }
 async function saveSettings() {
   try {
     org = (await axios.patch(`${API}/api/orgs/${org.id}`, {
-      auto_invite: $('sAutoInvite').checked,
+      auto_invite: $('sAutoInvite').checked, require_mediator_review: $('sMediator').checked,
       payee: { upi_id: $('pUpi').value.trim(), account_name: $('pName').value.trim(),
                account_number: $('pAcct').value.trim(), ifsc: $('pIfsc').value.trim().toUpperCase(),
                bank: $('pBank').value.trim() } }, auth())).data;
