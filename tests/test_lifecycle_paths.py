@@ -504,3 +504,20 @@ def test_escalation_email_never_sends_court_file_to_respondent(client, login):
     cl_links = [l for e in client.get("/api/dev/outbox", params={"email": cl_email}).json()["emails"]
                 for l in e["links"]]
     assert any("court_file" in l for l in cl_links)
+
+
+def test_respondent_accepting_first_then_claimant_settles(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 50000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 40000})
+    r = client.post("/api/respondent/proposal-response", json={"case_id": case_id, "token": token, "decision": "ACCEPT"})
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) == "WAITING_FOR_CLAIMANT"
+    detail = client.get(f"/api/negotiation/status/{case_id}", headers=headers).json()["current_round_detail"]
+    assert detail["proposal_issued"] and detail["claimant_decision"] == "PENDING"  # UI shows buttons on this
+    r = client.post("/api/negotiation/proposal-response", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant"})
+    assert r.json()["outcome"] == "SETTLED"
+    assert _status(client, case_id) == "SETTLED"

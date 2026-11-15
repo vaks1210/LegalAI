@@ -1743,7 +1743,12 @@ async function loadNegotiation() {
         `;
 
         // Accept / Reject buttons if pending
-        if (rd.claimant_decision === 'PENDING' && ['PROPOSAL_ISSUED','SETTLEMENT_PENDING_CONFIRMATION'].includes(c.status)) {
+        // After the respondent decides first the case is WAITING_FOR_CLAIMANT; the
+        // claimant must still be able to answer (previously no buttons were shown and
+        // the proposal timed out as a rejection).
+        const proposalOpen = ['PROPOSAL_ISSUED', 'SETTLEMENT_PENDING_CONFIRMATION'].includes(c.status)
+          || (c.status === 'WAITING_FOR_CLAIMANT' && rd.proposal_issued);
+        if ((rd.claimant_decision || 'PENDING') === 'PENDING' && proposalOpen) {
           html += `
             <div style="display:flex;gap:12px;margin-top:12px;">
               <button class="btn btn-green" style="flex:1;"
@@ -1869,13 +1874,19 @@ async function respondToProposal(decision) {
   try {
     const r = await axios.get(`${API}/api/cases/${currentCaseId}`, authHeaders());
     const roundNum = r.data.current_round || 1;
-    await axios.post(`${API}/api/negotiation/proposal-response`, {
+    const res = await axios.post(`${API}/api/negotiation/proposal-response`, {
       case_id:      currentCaseId,
       round_number: roundNum,
       decision:     decision,
       party:        'claimant',
     }, authHeaders());
-    alert(decision === 'ACCEPT' ? 'Accepted! Waiting for respondent.' : 'Rejected. Next round will start.');
+    const outcome = res.data?.outcome;
+    const messages = {
+      SETTLED:    'Both parties accepted — the case is settled. Your settlement agreement is being prepared under Documents.',
+      NEXT_ROUND: 'Proposal rejected. The next round is now open.',
+      ESCALATED:  'Mediation has concluded without settlement. Your court-ready file is being prepared.',
+    };
+    alert(messages[outcome] || res.data?.message || 'Your decision has been recorded.');
     loadNegotiation();
     loadMyCases();
   } catch(e) {
