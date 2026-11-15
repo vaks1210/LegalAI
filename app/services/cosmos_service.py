@@ -181,21 +181,40 @@ class CosmosService:
             raise ValueError(f"Invalid agent name: {agent_name}")
         return self.update_case(case_id, {agent_name: output})
 
+    # What the respondent may see. An allow-list: the previous deny-list hid
+    # only analytics_data, so the claimant's private strategy (incl. their
+    # settlement floor), analysed weaknesses and the court file (which embeds
+    # analytics) all reached the opposing party.
+    RESPONDENT_CASE_FIELDS = (
+        "id", "status", "track", "created_at", "updated_at", "current_deadline",
+        "current_round", "max_rounds", "action_required_by",
+        "claimant_name", "claimant_city", "claimant_state",
+        "respondent_name", "respondent_email", "respondent_type", "respondent_company_name",
+        "claim_amount", "currency", "dispute_text", "incident_date", "evidence_files",
+        "respondent_version", "respondent_counter_amount",
+        "settlement_url", "settled_amount", "settled_at",
+    )
+    RESPONDENT_INTAKE_FIELDS = ("dispute_type", "severity", "key_issues", "key_facts")
+    RESPONDENT_LEGAL_FIELDS = (
+        "applicable_laws", "forum_name", "respondent_defenses", "relief_available",
+        "legal_notice_required",
+    )
+    RESPONDENT_DOCUMENT_FIELDS = ("demand_letter_url", "settlement_url", "mediation_certificate_url")
+
     def get_case_for_respondent(self, case_id: str) -> Optional[dict]:
-        """
-        Filtered view of case for the respondent.
-        Removes analytics_data (contains win probability + ZOPA)
-        and evidence strength score.
-        """
+        """Filtered (allow-list) view of a case for the respondent."""
         case = self.get_case(case_id)
         if not case:
             return None
-        hidden = ["analytics_data", "claimant_phone", "disclaimer_acknowledged"]
-        view = {k: v for k, v in case.items() if k not in hidden}
-        if view.get("intake_data"):
-            ic = dict(view["intake_data"])
-            ic.pop("evidence_strength_score", None)
-            view["intake_data"] = ic
+
+        def pick(src, keys):
+            src = src or {}
+            return {k: src[k] for k in keys if k in src}
+
+        view = pick(case, self.RESPONDENT_CASE_FIELDS)
+        view["intake_data"]    = pick(case.get("intake_data"), self.RESPONDENT_INTAKE_FIELDS)
+        view["legal_data"]     = pick(case.get("legal_data"), self.RESPONDENT_LEGAL_FIELDS)
+        view["documents_data"] = pick(case.get("documents_data"), self.RESPONDENT_DOCUMENT_FIELDS)
         from app.services.blob_service import refresh_case_urls
         return refresh_case_urls(view)
 

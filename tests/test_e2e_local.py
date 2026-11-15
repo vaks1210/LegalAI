@@ -225,3 +225,26 @@ def test_respondent_link_token_alone_opens_case_but_wrong_email_is_refused(clien
     assert client.get(f"/api/respondent/case/{case_id}", params={"t": token}).status_code == 200
     r = client.get(f"/api/respondent/case/{case_id}", params={"t": token, "email": "someone@else.com"})
     assert r.status_code == 403
+
+
+def test_respondent_view_excludes_claimant_private_analysis(client, login):
+    from urllib.parse import parse_qs, urlparse
+    headers = login("private@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="private@example.com", respondent_email="private-resp@example.com",
+    ))
+    case_id = r.json()["case_id"]
+    assert client.post(f"/api/cases/{case_id}/strategy", headers=headers).status_code == 200
+    client.post(f"/api/cases/{case_id}/send-invite", headers=headers)
+    mails = client.get("/api/dev/outbox", params={"email": "private-resp@example.com"}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+
+    view = client.get(f"/api/respondent/case/{case_id}", params={"t": token}).json()
+    case = view["case"]
+    for secret in ("analytics_data", "strategy_data", "claimant_phone", "routing", "claimant_email"):
+        assert secret not in case, secret
+    assert "claimant_weaknesses" not in case["intake_data"]
+    assert "missing_proof_checklist" not in case["intake_data"]
+    assert "court_file_url" not in case["documents_data"]
+    assert "zopa" not in str(view).lower()
+    assert case["dispute_text"] and case["claimant_name"]
