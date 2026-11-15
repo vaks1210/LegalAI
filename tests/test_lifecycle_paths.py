@@ -490,3 +490,17 @@ def test_interrupted_settlement_is_completed_not_treated_as_breach(client, login
     case = cosmos_service.get_case(case_id)
     assert case["status"] == "SETTLED"
     assert case.get("settlement_url") and not case.get("breach_notice_url")
+
+
+def test_escalation_email_never_sends_court_file_to_respondent(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    for rnd in (1, 2, 3):
+        _play_round(client, case_id, headers, resp_email, token, rnd)
+    assert _status(client, case_id) == "ESCALATED"
+    resp_links = [l for e in client.get("/api/dev/outbox", params={"email": resp_email}).json()["emails"]
+                  for l in e["links"]]
+    assert not any("court_file" in l for l in resp_links)
+    cl_email = "cl" + resp_email[2:]
+    cl_links = [l for e in client.get("/api/dev/outbox", params={"email": cl_email}).json()["emails"]
+                for l in e["links"]]
+    assert any("court_file" in l for l in cl_links)

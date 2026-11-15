@@ -400,33 +400,36 @@ class EmailService:
         party_name: str,
         case_id: str,
         download_url: str,
+        for_claimant: bool = True,
     ) -> bool:
         short_id = case_id[:8].upper()
+        if for_claimant:
+            body = ("The AI mediation process has concluded without reaching a settlement. "
+                    "A court-ready case file has been prepared for you.")
+            label, subject = "Download Court File", f"Mediation Concluded - Court File Ready - Case #{short_id}"
+        else:
+            body = ("The AI mediation process has concluded without reaching a settlement. "
+                    "The claimant may now pursue the matter before the appropriate court or forum. "
+                    "A certificate recording the mediation attempt is available below.")
+            label, subject = "View Mediation Certificate", f"Mediation Concluded - Case #{short_id}"
         html = f"""
         <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;
                     background:#0F2A4A;padding:32px;border-radius:8px;">
             <h2 style="color:#DC2626;">Mediation Concluded</h2>
             <p style="color:#E2E8F0;font-size:14px;">Dear {party_name},</p>
-            <p style="color:#E2E8F0;font-size:14px;">
-                The AI mediation process has concluded without reaching a
-                settlement. A court-ready case file has been prepared.
-            </p>
+            <p style="color:#E2E8F0;font-size:14px;">{body}</p>
             <a href="{download_url}"
                style="display:block;background:#DC2626;color:#fff;
                       text-align:center;padding:14px;border-radius:6px;
                       font-weight:bold;text-decoration:none;font-size:15px;">
-                Download Court File
+                {label}
             </a>
             <p style="color:#475569;font-size:11px;margin-top:16px;">
                 Case Reference: {short_id} | LegalAI Resolver
             </p>
         </div>
         """
-        return self.send(
-            to_email,
-            f"Mediation Concluded - Court File Ready - Case #{short_id}",
-            html,
-        )
+        return self.send(to_email, subject, html)
 
     @_escape_fields('party_name')
     def send_next_round_invite(

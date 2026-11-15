@@ -721,16 +721,19 @@ async def _handle_escalation(case_id: str):
             {"mediation_certificate_url": cert_url, "escalated_at": _now(), "action_required_by": None},
         )
 
-        # EMAIL both parties
-        for to_email, party_name in [
-            (case["claimant_email"],   case["claimant_name"]),
-            (case["respondent_email"], case["respondent_name"]),
+        # EMAIL both parties. The court file embeds the claimant's private
+        # analysis, so only the claimant gets it; the respondent gets the
+        # mediation certificate (or their portal).
+        for to_email, party_name, link, is_claimant in [
+            (case["claimant_email"],   case["claimant_name"],   court_url, True),
+            (case["respondent_email"], case["respondent_name"], cert_url or _portal_url(case, "respondent"), False),
         ]:
             email_service.send_escalation_notice(
                 to_email=to_email,
                 party_name=party_name,
                 case_id=case_id,
-                download_url=court_url,
+                download_url=link,
+                for_claimant=is_claimant,
             )
 
         logger.info(f"Case escalated | case_id={case_id}")
