@@ -893,6 +893,12 @@ def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: lis
     return content
 
 
+def _mediator_review(case: dict) -> dict:
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    rnd = next((r for r in (neg or {}).get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    return rnd.get("mediator_review") or {}
+
+
 def _acceptance_records(case: dict) -> list:
     """Decision records (who/when/how/terms fingerprint) for the settled round."""
     neg = cosmos_service.get_negotiation_by_case(case["id"])
@@ -1025,6 +1031,13 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
             story.append(_bullet(" | ".join(details)))
         story.append(_body_para(
             f"Fingerprint of the accepted terms (SHA-256): {records[0][1].get('terms_sha256', 'n/a')}"))
+        review = _mediator_review(case)
+        if review.get("reviewed_by"):
+            story.append(_body_para(
+                f"The settlement proposal was reviewed and approved by mediator {review['reviewed_by']} "
+                f"on {_fmt_date(review.get('reviewed_at'))}."))
+        elif review.get("released_without_review"):
+            story.append(_body_para("The settlement proposal was issued by the AI mediator without human review."))
 
     # Signature blocks
     story.append(Spacer(1, 8*mm))

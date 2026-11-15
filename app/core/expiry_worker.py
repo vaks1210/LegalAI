@@ -97,9 +97,21 @@ async def _resume_mediation(case_id: str, case: dict):
     neg = cosmos_service.get_negotiation_by_case(case_id)
     if not neg:
         return
+    round_number = case.get("current_round", 1)
+    rnd = cosmos_service.get_round(neg["id"], round_number) or {}
+    draft = rnd.get("draft_proposal")
+    if draft and not rnd.get("proposal_issued_at"):
+        # Mediator review SLA passed: release the AI draft (flagged) rather
+        # than leave both parties waiting indefinitely.
+        logger.warning(f"Mediator review SLA passed — releasing draft | case_id={case_id}")
+        from app.routers.negotiation import issue_proposal
+        issue_proposal(case_id, round_number, draft.get("amount"), draft.get("actions"), draft.get("reasoning"),
+                       review={"released_without_review": True,
+                               "released_at": datetime.now(timezone.utc).isoformat()})
+        return
     logger.warning(f"Resuming interrupted mediation | case_id={case_id}")
     from app.routers.negotiation import _run_mediation
-    await _run_mediation(case_id, neg["id"], case.get("current_round", 1))
+    await _run_mediation(case_id, neg["id"], round_number)
 
 
 async def _resume_escalation(case_id: str):

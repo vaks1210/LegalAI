@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
@@ -442,6 +442,44 @@ async def submit_respondent_offer(
 # AI MEDIATION BACKGROUND TASK
 # ─────────────────────────────────────────────────────────────
 
+def mediator_review_required(case: dict) -> bool:
+    if settings.REQUIRE_MEDIATOR_REVIEW:
+        return True
+    if case.get("org_id"):
+        org = cosmos_service.get_org(case["org_id"]) or {}
+        return bool((org.get("settings") or {}).get("require_mediator_review"))
+    return False
+
+
+def issue_proposal(case_id: str, round_number: int, amount, actions, reasoning,
+                   review: dict | None = None) -> None:
+    """Publish a proposal to both parties (after AI mediation or mediator review)."""
+    case = cosmos_service.get_case(case_id)
+    neg = cosmos_service.get_negotiation_by_case(case_id)
+    cosmos_service.update_round_in_negotiation(neg["id"], round_number, {
+        "ai_proposed_amount":          amount,
+        "ai_proposed_actions":         actions,
+        "ai_reasoning":                reasoning,
+        "settlement_candidate_amount": amount,
+        "settlement_candidate_reason": reasoning,
+        "proposal_issued_at":          _now(),
+        **({"mediator_review": review} if review else {}),
+    })
+    cosmos_service.transition_case(
+        case_id, CaseStatus.PROPOSAL_ISSUED,
+        {"current_round": round_number, "action_required_by": None, "awaiting_mediator": False},
+    )
+    for to_email, party_name, portal in [
+        (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
+        (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
+    ]:
+        email_service.send_proposal(
+            to_email=to_email, party_name=party_name, case_id=case_id, round_num=round_number,
+            proposed_amount=amount or 0, reasoning=reasoning or "", portal_url=portal,
+        )
+    logger.info(f"Proposal issued | case_id={case_id} | round={round_number} | amount={amount}")
+
+
 async def _run_mediation(case_id: str, neg_id: str, round_number: int):
     """
     Runs the AI negotiation agent and issues a proposal.
@@ -479,44 +517,28 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
             respondent_offer=respondent_offer,
         )
 
-        now = _now()
-        cosmos_service.update_round_in_negotiation(neg_id, round_number, {
-            "ai_proposed_amount":          proposal.get("proposed_amount"),
-            "ai_proposed_actions":         proposal.get("proposed_actions"),
-            "ai_reasoning":                proposal.get("reasoning"),
-            "settlement_candidate_amount": proposal.get("proposed_amount"),
-            "settlement_candidate_reason": proposal.get("reasoning"),
-            "proposal_issued_at":          now,
-        })
+        # Human-in-the-loop: when review is required the AI proposal is held
+        # as a draft for a mediator; otherwise it goes straight to the parties.
+        if mediator_review_required(case):
+            cosmos_service.update_round_in_negotiation(neg_id, round_number, {
+                "draft_proposal": {
+                    "amount":    proposal.get("proposed_amount"),
+                    "actions":   proposal.get("proposed_actions"),
+                    "reasoning": proposal.get("reasoning"),
+                    "drafted_at": _now(),
+                },
+            })
+            # Review SLA: the watchdog releases an unreviewed draft after this.
+            cosmos_service.update_case(case_id, {
+                "awaiting_mediator": True,
+                "current_deadline": (datetime.now(timezone.utc)
+                                     + timedelta(hours=settings.MEDIATOR_REVIEW_SLA_HOURS)).isoformat(),
+            })
+            logger.info(f"Proposal drafted for mediator review | case_id={case_id} | round={round_number}")
+            return
 
-        cosmos_service.transition_case(
-            case_id,
-            CaseStatus.PROPOSAL_ISSUED,
-            {"current_round": round_number, "action_required_by": None},
-        )
-
-        proposed_amount = proposal.get("proposed_amount") or 0
-        reasoning       = proposal.get("reasoning") or ""
-
-        # EMAIL both parties with the proposal
-        for to_email, party_name, portal in [
-            (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
-            (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
-        ]:
-            email_service.send_proposal(
-                to_email=to_email,
-                party_name=party_name,
-                case_id=case_id,
-                round_num=round_number,
-                proposed_amount=proposed_amount,
-                reasoning=reasoning,
-                portal_url=portal,
-            )
-
-        logger.info(
-            f"Mediation complete | case_id={case_id} | "
-            f"round={round_number} | proposed=Rs.{proposed_amount:,.0f}"
-        )
+        issue_proposal(case_id, round_number, proposal.get("proposed_amount"),
+                       proposal.get("proposed_actions"), proposal.get("reasoning"))
 
     except Exception as e:
         logger.error(f"Mediation failed | case_id={case_id} | error={e}", exc_info=True)

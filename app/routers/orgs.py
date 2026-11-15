@@ -164,6 +164,7 @@ class OrgUpdate(BaseModel):
     contact_email: str | None = None
     profile:       OrgProfile | None = None
     auto_invite:   bool | None = None
+    require_mediator_review: bool | None = None
     payee:         Payee | None = None
 
 
@@ -180,6 +181,8 @@ async def update_org(body: OrgUpdate, actor: OrgActor = Depends(org_actor)):
             org["profile"] = body.profile.model_dump()
         if body.auto_invite is not None:
             org.setdefault("settings", {})["auto_invite"] = body.auto_invite
+        if body.require_mediator_review is not None:
+            org.setdefault("settings", {})["require_mediator_review"] = body.require_mediator_review
         if body.payee is not None:
             org["payee"] = body.payee.model_dump()
     return _public_org(cosmos_service.mutate_org(actor.org["id"], apply))

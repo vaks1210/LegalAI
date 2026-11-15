@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     JWT_EXPIRE_HOURS:    int = Field(default=72)
     OTP_EXPIRE_MINUTES:  int = Field(default=10)
 
+    # ── Human mediators ──────────────────────────────────
+    # Comma-separated emails of accredited mediators who review AI proposals.
+    MEDIATOR_EMAILS:           str  = Field(default="")
+    REQUIRE_MEDIATOR_REVIEW:   bool = Field(default=False)   # for every case
+    MEDIATOR_REVIEW_SLA_HOURS: int  = Field(default=24)
+
+    @property
+    def mediator_emails(self) -> set:
+        return {e.strip().lower() for e in self.MEDIATOR_EMAILS.split(",") if e.strip()}
+
     # ── Payments (blank = manual payee details) ─────────
     RAZORPAY_KEY_ID:         str = Field(default="")
     RAZORPAY_KEY_SECRET:     str = Field(default="")
