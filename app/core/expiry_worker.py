@@ -210,6 +210,14 @@ async def _expire_round_pending(case_id: str, case: dict):
     if not current_round:
         return
 
+    # WAITING_FOR_* is also the status while one party has decided on an
+    # issued proposal and the other hasn't. That is the decision phase, not
+    # the offer phase: time it out like an unanswered proposal. (Re-running
+    # mediation here changed nothing and left the case waiting forever.)
+    if current_round.get("proposal_issued_at"):
+        await _expire_proposal_issued(case_id, case)
+        return
+
     claimant_submitted = bool((current_round.get("claimant") or {}).get("submitted_at"))
     respondent_submitted = bool((current_round.get("respondent") or {}).get("submitted_at"))
     if claimant_submitted and respondent_submitted:

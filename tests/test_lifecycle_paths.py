@@ -535,3 +535,18 @@ def test_offer_after_proposal_is_refused(client, login):
         "case_id": case_id, "round_number": 1, "offer_amount": 45000})
     assert r.status_code == 409
     assert _status(client, case_id) == "WAITING_FOR_CLAIMANT"
+
+
+def test_one_sided_acceptance_times_out_instead_of_waiting_forever(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 50000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 40000})
+    client.post("/api/negotiation/proposal-response", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant"})
+    assert _status(client, case_id) == "WAITING_FOR_RESPONDENT"   # respondent never answers
+    _expire_now(case_id)
+    _run_expiry()
+    status = client.get(f"/api/cases/{case_id}/status").json()
+    assert status["status"] == "NEGOTIATION_OPEN" and status["current_round"] == 2
