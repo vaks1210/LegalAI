@@ -2,13 +2,14 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, InvalidCaseState, UnauthorizedAccess
 from app.core.access import require_claimant_side
+from app.core.audit import decision_record
 from app.core.negotiation_rules import check_direct_settlement
 from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
@@ -530,6 +531,7 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
 async def proposal_response(
     body: ProposalResponseRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     current_user: dict = Depends(get_current_user_optional),
 ):
     """
@@ -595,11 +597,16 @@ async def proposal_response(
         }
 
     # Record ONLY this party's decision, atomically (see record_offer).
+    actor = (current_user or {}).get("email") if body.party == "claimant" else case["respondent_email"]
+    method = "logged-in account" if body.party == "claimant" else "signed respondent link"
+
     def record_decision(r: dict) -> None:
         side = r[body.party]
         if side.get("decision", ProposalDecision.PENDING.value) == ProposalDecision.PENDING.value:
             side["decision"]   = body.decision.value
             side["decided_at"] = _now()
+            side["decision_record"] = {**decision_record(http_request, actor, method, r),
+                                       "decision": body.decision.value}
 
     round_doc = cosmos_service.mutate_round(neg["id"], round_number, record_decision)
 

@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 import io
 from app.core.access import is_claimant_side, require_claimant_side, require_party
@@ -192,4 +192,28 @@ async def get_all_documents(
         "status":           case["status"],
         "documents":        documents,
         "document_records": records,
+    }
+
+@router.post("/verify")
+async def verify_settlement_agreement(file: UploadFile = File(...)):
+    """
+    Public: check that a settlement agreement PDF is an unaltered copy of
+    one issued by the platform. Reveals only the case reference and dates.
+    """
+    import hashlib
+    data = await file.read(20 * 1024 * 1024 + 1)
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large.")
+    digest = hashlib.sha256(data).hexdigest()
+    case = cosmos_service.find_case_by_settlement_hash(digest)
+    if not case:
+        return {"valid": False, "sha256": digest,
+                "message": "This file does not match any agreement issued by LegalAI Resolver. "
+                           "It may have been altered, or it is not a LegalAI settlement agreement."}
+    return {
+        "valid": True, "sha256": digest,
+        "case_reference": case["id"][:8].upper(),
+        "issued_at": case.get("settlement_generated_at"),
+        "settled_at": case.get("settled_at"),
+        "message": "This is an unaltered copy of a settlement agreement issued by LegalAI Resolver.",
     }

@@ -444,6 +444,15 @@ class CosmosService:
             neg_id, lambda neg: neg.setdefault("shared_notes", []).append(note)
         )
 
+    def find_case_by_settlement_hash(self, sha256: str) -> Optional[dict]:
+        if self.local:
+            r = self.cases.find(lambda c: c.get("settlement_sha256") == sha256)
+            return r[0] if r else None
+        q = "SELECT * FROM c WHERE c.settlement_sha256 = @h"
+        r = list(self.cases.query_items(query=q, parameters=[{"name": "@h", "value": sha256}],
+                                        enable_cross_partition_query=True))
+        return r[0] if r else None
+
     # ── Organisations (B2B tenants) ───────────────────────────
 
     def create_org(self, data: dict) -> dict:

@@ -3,12 +3,13 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.background import in_thread
 from app.config import settings
 from app.core.exceptions import CaseNotFound
+from app.core.audit import decision_record
 from app.core.security import verify_respondent_token
 from app.core.uploads import MAX_UPLOAD_BYTES, validate_upload
 from app.models.case import CaseStatus
@@ -168,7 +169,7 @@ async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
 # ─────────────────────────────────────────────────────────────
 
 @router.post("/accept-in-full")
-async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTasks):
+async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTasks, http_request: Request):
     """
     Respondent accepts the claimant's full claimed amount without negotiation.
 
@@ -204,18 +205,24 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
             "current_waiting_on": None,
         })
     round_number = case.get("current_round") or 1
+    terms = {"settlement_candidate_amount": settled_amount, "ai_reasoning": "Respondent accepted the full claimed amount."}
+    respondent_record = {**decision_record(http_request, case["respondent_email"], "signed respondent link", terms),
+                         "decision": ProposalDecision.ACCEPT.value}
+    claimant_record = {"at": case.get("created_at"), "actor": case["claimant_email"],
+                       "method": "amount claimed when filing", "decision": ProposalDecision.ACCEPT.value,
+                       "terms_sha256": respondent_record["terms_sha256"]}
     cosmos_service.upsert_round_in_negotiation(neg["id"], round_number, {
         "round_number":                round_number,
         "offer_type":                  "monetary",
         "claimant": {
             "amount": settled_amount, "actions": [], "explanation": None,
             "decision": ProposalDecision.ACCEPT.value,
-            "submitted_at": now, "decided_at": now,
+            "submitted_at": now, "decided_at": now, "decision_record": claimant_record,
         },
         "respondent": {
             "amount": settled_amount, "actions": [], "explanation": None,
             "decision": ProposalDecision.ACCEPT.value,
-            "submitted_at": now, "decided_at": now,
+            "submitted_at": now, "decided_at": now, "decision_record": respondent_record,
         },
         "ai_proposed_amount":          settled_amount,
         "ai_reasoning":                "Respondent accepted the full claimed amount.",
@@ -348,7 +355,8 @@ async def _generate_declined_court_file(case_id: str, case: dict):
 # ─────────────────────────────────────────────────────────────
 
 @router.post("/proposal-response")
-async def respondent_proposal_response(body: RespondentDecision, background_tasks: BackgroundTasks):
+async def respondent_proposal_response(body: RespondentDecision, background_tasks: BackgroundTasks,
+                                       http_request: Request):
     """
     Respondent accepts or rejects the AI proposal.
     Delegates to the shared proposal_response handler in negotiation router.
@@ -370,7 +378,7 @@ async def respondent_proposal_response(body: RespondentDecision, background_task
         reason=body.reason,
         respondent_token=body.token,
     )
-    return await proposal_response(request, background_tasks, current_user=None)
+    return await proposal_response(request, background_tasks, http_request, current_user=None)
 
 
 # ─────────────────────────────────────────────────────────────
