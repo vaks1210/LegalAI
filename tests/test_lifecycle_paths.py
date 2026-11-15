@@ -232,3 +232,38 @@ def test_proof_request_exchange_reaches_respondent_and_mediator(client, login):
     })
     assert r.status_code == 200, r.text
     assert _status(client, case_id) == "PROPOSAL_ISSUED"
+
+
+def _settled_case(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    r = client.post("/api/respondent/accept-in-full", json={
+        "case_id": case_id, "email": resp_email, "token": token,
+    })
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) == "SETTLED"
+    return case_id, headers
+
+
+def test_payment_received_closes_case(client, login):
+    case_id, headers = _settled_case(client, login)
+    r = client.post(f"/api/cases/{case_id}/confirm-payment", params={"honored": True}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "PAYMENT_RECEIVED"
+    case = client.get(f"/api/cases/{case_id}", headers=headers).json()
+    assert case["settlement_honored"] is True
+
+
+def test_payment_breach_generates_notice(client, login):
+    case_id, headers = _settled_case(client, login)
+    r = client.post(f"/api/cases/{case_id}/confirm-payment", params={"honored": False}, headers=headers)
+    assert r.status_code == 200, r.text
+    r = client.get(f"/api/documents/{case_id}/breach-notice", headers=headers)
+    assert r.status_code == 200, r.text
+    pdf = client.get(r.json()["download_url"].split("http://testserver", 1)[1])
+    assert pdf.content.startswith(b"%PDF")
+
+
+def test_payment_confirmation_rejected_before_settlement(client, login):
+    case_id, headers, *_ = _invited_case(client, login)
+    r = client.post(f"/api/cases/{case_id}/confirm-payment", params={"honored": True}, headers=headers)
+    assert r.status_code == 409

@@ -1531,6 +1531,25 @@ function renderCriminalAdvisory(i, l) {
   `;
 }
 
+async function submitClaimantProofResponse(requestId, roundNumber) {
+  const text = (document.getElementById(`claimantProofResponse_${requestId}`)?.value || '').trim();
+  if (text.length < 5) return alert('Please write at least a short response.');
+  try {
+    await axios.post(`${API}/api/negotiation/proof-response`, {
+      case_id: currentCaseId,
+      round_number: roundNumber,
+      party: 'claimant',
+      request_id: requestId,
+      response_text: text,
+      file_refs: [],
+    }, authHeaders());
+    alert('Proof response sent to the respondent.');
+    loadNegotiation();
+  } catch(e) {
+    alert(e.response?.data?.detail || 'Failed to send proof response.');
+  }
+}
+
 async function resendInvite(caseId) {
   try {
     const r = await axios.post(`${API}/api/cases/${caseId}/resend-invite`, {}, authHeaders());
@@ -1630,6 +1649,10 @@ async function loadNegotiation() {
                   <div style="font-size:13px;font-weight:600;margin:4px 0;">${p.request_text}</div>
                   <div style="font-size:12px;color:${p.status === 'PENDING' ? 'var(--gold)' : 'var(--green)'};">${p.status}</div>
                   ${p.response_text ? `<div style="font-size:13px;color:var(--dark);margin-top:6px;">Response: ${p.response_text}</div>` : ''}
+                  ${p.requested_from === 'claimant' && p.status === 'PENDING' ? `
+                    <textarea id="claimantProofResponse_${p.id}" style="margin-top:8px;" placeholder="Reply with the proof details, explanation, or why it is unavailable."></textarea>
+                    <button class="btn btn-outline" style="margin-top:8px;" onclick="submitClaimantProofResponse('${p.id}', ${p.round_number})">Send Proof Response</button>
+                  ` : ''}
                 </div>
               `).join('')}
             </div>
