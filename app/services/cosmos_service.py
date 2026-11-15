@@ -1,4 +1,6 @@
 import os
+import random
+import time
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
@@ -82,6 +84,7 @@ class CosmosService:
                 )
             except exceptions.CosmosAccessConditionFailedError:
                 logger.info(f"ETag conflict, retrying | id={item_id} | attempt={attempt + 1}")
+                time.sleep(random.uniform(0, 0.02 * (attempt + 1)))  # jitter so writers desynchronise
         raise RuntimeError(f"Could not update {item_id}: too many concurrent writes")
 
     # ── Cases ─────────────────────────────────────────────────
