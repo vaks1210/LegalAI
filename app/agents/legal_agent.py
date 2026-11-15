@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from app.services.openai_service import openai_service
+from app.core.coerce import to_number
 from app.core.legal_reference import (
     get_consumer_forum_tier,
     get_rent_control_act,
@@ -658,25 +659,35 @@ def _get_state_context(state: str, track: str, case: dict) -> str:
 def _post_process(result: dict, case: dict, track: str, intake_data: dict) -> dict:
     """Validate, compute, and enrich legal agent output."""
 
-    if not isinstance(result.get("applicable_laws"), list):
-        result["applicable_laws"] = []
-    if not isinstance(result.get("precedent_cases"), list):
-        result["precedent_cases"] = []
-    if not isinstance(result.get("claimant_rights"), list):
-        result["claimant_rights"] = []
-    if not isinstance(result.get("respondent_defenses"), list):
-        result["respondent_defenses"] = []
-    if not isinstance(result.get("relief_available"), list):
-        result["relief_available"] = []
+    # The UI and documents iterate these; a model may return one string
+    # instead of a list — keep its content rather than dropping it.
+    for field in ("applicable_laws", "precedent_cases", "claimant_rights", "respondent_defenses",
+                  "relief_available", "filing_steps", "recommended_immediate_actions",
+                  "key_legal_issues", "ipc_sections"):
+        value = result.get(field)
+        if isinstance(value, str) and value.strip():
+            result[field] = [value.strip()]
+        elif not isinstance(value, list):
+            result[field] = []
+    result["applicable_laws"] = [
+        law if isinstance(law, dict) else {"act": str(law), "section": "", "relevance": "", "strength": "SUPPORTING"}
+        for law in result["applicable_laws"]
+    ]
+    if result.get("legal_standing") not in ("WEAK", "MODERATE", "STRONG", "VERY_STRONG"):
+        result["legal_standing"] = "MODERATE"
+    result["total_statutory_dues"] = to_number(result.get("total_statutory_dues"), 0) or 0
 
     # Employment — calculate total statutory dues from entitlements
     if track == "employment":
-        entitlements = result.get("statutory_entitlements", {})
+        entitlements = result.get("statutory_entitlements")
+        if not isinstance(entitlements, dict):
+            entitlements = {}
+            result["statutory_entitlements"] = {}
         total = 0
         for key, val in entitlements.items():
             if isinstance(val, dict):
-                amt = val.get("amount", 0)
-                if isinstance(amt, (int, float)) and amt > 0:
+                amt = to_number(val.get("amount"), 0)
+                if amt and amt > 0:
                     total += amt
         result["total_statutory_dues"] = round(total, 2)
 

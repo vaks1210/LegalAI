@@ -156,3 +156,16 @@ def test_wrongly_typed_llm_output_does_not_break_the_flow(client, login, fake_ll
               if rec.levelno >= logging.ERROR and "LLM call failed" not in rec.getMessage()]
     assert not errors, errors
     assert case["status"] == "PROPOSAL_ISSUED", case["status"]
+
+
+def test_legal_output_types_are_normalised(client, login, fake_llm):
+    from app.services.cosmos_service import cosmos_service
+    fake_llm(lambda s, u: json.dumps(WRONG_TYPES))
+    headers = login("listprobe@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="listprobe@example.com", respondent_email="listprobe-r@example.com"))
+    legal = cosmos_service.get_case(r.json()["case_id"])["legal_data"]
+    assert legal["filing_steps"] == ["go to court"]           # kept, as a list
+    assert legal["applicable_laws"][0]["act"] == "Indian Contract Act s.73"
+    assert legal["legal_standing"] == "MODERATE"
+    assert legal["total_statutory_dues"] == 0
