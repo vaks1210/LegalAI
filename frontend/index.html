@@ -1766,7 +1766,10 @@ async function loadNegotiation() {
     }
 
     // Submit offer form (only when NEGOTIATING and no offer yet)
-    if (['NEGOTIATION_OPEN','WAITING_FOR_CLAIMANT','PROOF_REQUESTED','PROOF_RESPONSE_PENDING'].includes(c.status) && (!c.action_required_by || c.action_required_by === 'claimant')) {
+    const rdNow = ns.current_round_detail || {};
+    if (['NEGOTIATION_OPEN','WAITING_FOR_CLAIMANT','PROOF_REQUESTED','PROOF_RESPONSE_PENDING'].includes(c.status)
+        && (!c.action_required_by || c.action_required_by === 'claimant')
+        && !rdNow.proposal_issued && !rdNow.claimant_submitted) {
       const roundNum = ns.current_round || c.current_round || 1;
       html += `
         </div>

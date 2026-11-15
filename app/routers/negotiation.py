@@ -189,6 +189,14 @@ async def _handle_offer_submission(
     """
     round_number = round_doc["round_number"]
 
+    # Once the mediator has proposed, the round is decided by Accept/Reject;
+    # a late offer would overwrite the round and re-run mediation.
+    if round_doc.get("proposal_issued_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="A settlement proposal for this round is awaiting decisions. Accept or reject it instead.",
+        )
+
     # Record ONLY this party's offer, atomically. Writing back the whole
     # round could erase the other party's offer if both submit at once.
     def record_offer(r: dict) -> None:

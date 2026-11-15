@@ -521,3 +521,17 @@ def test_respondent_accepting_first_then_claimant_settles(client, login):
         "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant"})
     assert r.json()["outcome"] == "SETTLED"
     assert _status(client, case_id) == "SETTLED"
+
+
+def test_offer_after_proposal_is_refused(client, login):
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 50000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 40000})
+    client.post("/api/respondent/proposal-response", json={"case_id": case_id, "token": token, "decision": "ACCEPT"})
+    assert _status(client, case_id) == "WAITING_FOR_CLAIMANT"
+    r = client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 45000})
+    assert r.status_code == 409
+    assert _status(client, case_id) == "WAITING_FOR_CLAIMANT"
