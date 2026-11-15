@@ -11,6 +11,16 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+# Documents built from the claimant's private analysis (the court file embeds
+# win probability / settlement range; the FIR advisory is the claimant's).
+CLAIMANT_ONLY = {"court_file", "fir_advisory"}
+
+
+def _require_claimant(case: dict, user_email: str) -> None:
+    if case["claimant_email"].lower() != user_email.lower():
+        raise UnauthorizedAccess()
+
+
 def _get_case_and_verify(case_id: str, user_email: str) -> dict:
     """Fetch case and verify user is claimant or respondent."""
     case = cosmos_service.get_case(case_id)
@@ -49,6 +59,7 @@ async def get_court_file(
 ):
     """Returns SAS download URL for court-ready case file."""
     case = _get_case_and_verify(case_id, current_user["email"])
+    _require_claimant(case, current_user["email"])
 
     docs_data = case.get("documents_data", {})
     url       = docs_data.get("court_file_url")
@@ -94,6 +105,7 @@ async def get_fir_advisory(
 ):
     """Returns SAS download URL for FIR advisory (criminal track only)."""
     case = _get_case_and_verify(case_id, current_user["email"])
+    _require_claimant(case, current_user["email"])
 
     if case.get("track") != "criminal":
         raise HTTPException(
@@ -156,16 +168,21 @@ async def get_all_documents(
     docs_data = case.get("documents_data") or {}
     records   = cosmos_service.get_documents_by_case(case_id)
 
+    is_claimant = case["claimant_email"].lower() == current_user["email"].lower()
+    documents = {
+        "demand_letter":         docs_data.get("demand_letter_url"),
+        "court_file":            docs_data.get("court_file_url"),
+        "fir_advisory":          docs_data.get("fir_advisory_url"),
+        "settlement_agreement":  case.get("settlement_url"),
+        "mediation_certificate": docs_data.get("mediation_certificate_url"),
+        "breach_notice":         case.get("breach_notice_url"),
+    }
+    if not is_claimant:
+        documents = {k: v for k, v in documents.items() if k not in CLAIMANT_ONLY}
+        records = [r for r in records if r.get("doc_type") not in CLAIMANT_ONLY]
     return {
-        "case_id":   case_id,
-        "status":    case["status"],
-        "documents": {
-            "demand_letter":         docs_data.get("demand_letter_url"),
-            "court_file":            docs_data.get("court_file_url"),
-            "fir_advisory":          docs_data.get("fir_advisory_url"),
-            "settlement_agreement":  case.get("settlement_url"),
-            "mediation_certificate": docs_data.get("mediation_certificate_url"),
-            "breach_notice":         case.get("breach_notice_url"),
-        },
+        "case_id":          case_id,
+        "status":           case["status"],
+        "documents":        documents,
         "document_records": records,
     }

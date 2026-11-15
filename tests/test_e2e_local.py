@@ -248,3 +248,17 @@ def test_respondent_view_excludes_claimant_private_analysis(client, login):
     assert "court_file_url" not in case["documents_data"]
     assert "zopa" not in str(view).lower()
     assert case["dispute_text"] and case["claimant_name"]
+
+
+def test_respondent_account_cannot_fetch_claimant_only_documents(client, login):
+    claimant = login("docs-owner@example.com")
+    r = client.post("/api/cases/submit", headers=claimant, json=_submission(
+        claimant_email="docs-owner@example.com", respondent_email="docs-resp@example.com",
+    ))
+    case_id = r.json()["case_id"]
+    respondent = login("docs-resp@example.com")  # anyone can log in as their own email
+
+    assert client.get(f"/api/documents/{case_id}/court-file", headers=respondent).status_code == 403
+    docs = client.get(f"/api/documents/{case_id}/all", headers=respondent).json()["documents"]
+    assert "court_file" not in docs and docs["demand_letter"]
+    assert client.get(f"/api/documents/{case_id}/court-file", headers=claimant).status_code == 200
