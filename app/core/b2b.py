@@ -51,28 +51,28 @@ BUILTIN_TEMPLATES = {
         "title": "Overdue invoice",
         "text": ("{claimant} supplied goods or services to {respondent} and raised invoice {reference} "
                  "dated {incident_date} for Rs. {amount}. Payment was due on {due_date} but remains unpaid "
-                 "despite reminders sent to {respondent}. {claimant} seeks payment of the outstanding "
-                 "Rs. {amount} under the contract. {details}"),
+                 "despite reminder emails sent to {respondent}. {claimant} seeks payment of the outstanding "
+                 "Rs. {amount} under the contract. {evidence} {details}"),
     },
     "unpaid_rent": {
         "title": "Unpaid rent",
         "text": ("{respondent} occupies premises let by {claimant} under rent agreement {reference}. "
                  "Unpaid rent of Rs. {amount} is outstanding for the period ending {due_date}, despite "
-                 "written reminders to {respondent}. {claimant} seeks payment of the rent arrears of "
-                 "Rs. {amount}. {details}"),
+                 "written reminders and emails to {respondent}. {claimant} seeks payment of the rent arrears of "
+                 "Rs. {amount}. {evidence} {details}"),
     },
     "loan_default": {
         "title": "Loan instalments overdue",
         "text": ("{respondent} borrowed money from {claimant} under loan account {reference}, disbursed on "
                  "{incident_date}. Repayment instalments due up to {due_date} have not been paid and Rs. "
-                 "{amount} is outstanding, despite repayment reminders. {claimant} seeks repayment of the "
-                 "outstanding Rs. {amount} under the loan agreement. {details}"),
+                 "{amount} is outstanding, despite repayment reminders sent by email and SMS. {claimant} seeks repayment of the "
+                 "outstanding Rs. {amount} under the loan agreement. {evidence} {details}"),
     },
     "cheque_bounce": {
         "title": "Dishonoured cheque",
         "text": ("{respondent} issued a cheque to {claimant} for Rs. {amount} towards an existing debt "
                  "(reference {reference}). The bounced cheque was returned unpaid by the bank on "
-                 "{due_date}. {claimant} seeks payment of Rs. {amount}. {details}"),
+                 "{due_date}. {claimant} seeks payment of Rs. {amount}. {evidence} {details}"),
     },
 }
 
@@ -81,13 +81,19 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class _Blank(dict):
+    OPTIONAL = {"details", "evidence"}
+
     def __missing__(self, key):
-        return "not stated"
+        return "" if key in self.OPTIONAL else "(not stated)"
+
+
+def _pretty_date(iso: str | None) -> str | None:
+    return datetime.fromisoformat(iso).strftime("%d %B %Y") if iso else None
 
 
 def render_template(text: str, values: dict) -> str:
     out = text.format_map(_Blank({k: v for k, v in values.items() if v not in (None, "")}))
-    return re.sub(r"\s+", " ", out.replace("not stated.", "").replace(" .", ".")).strip()
+    return re.sub(r"\s+", " ", out).replace(" .", ".").strip()
 
 
 def _amount(value) -> float | None:
@@ -146,7 +152,9 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         text = render_template(templates[key]["text"], {
             "claimant": claimant, "respondent": row["respondent_name"],
             "amount": f"{amount:,.0f}" if amount else None, "reference": row["reference"],
-            "incident_date": incident, "due_date": due, "details": row.get("details"),
+            "incident_date": _pretty_date(incident), "due_date": _pretty_date(due),
+            "details": row.get("details"),
+            "evidence": (f"Supporting documents available: {row['evidence']}." if row.get("evidence") else None),
         })
 
     data = {

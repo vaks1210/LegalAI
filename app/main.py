@@ -106,6 +106,11 @@ async def serve_frontend():
     return FileResponse("frontend/index.html")
 
 
+@app.get("/business", include_in_schema=False)
+async def serve_business_console():
+    return FileResponse("frontend/business.html")
+
+
 @app.get("/respond/{case_id}", include_in_schema=False)
 async def serve_respondent_portal(case_id: str):
     return FileResponse("frontend/respond.html")

@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LegalAI for Business</title>
+<script src="/static/vendor/axios.min.js"></script>
+<script src="/static/vendor/safe-render.js"></script>
+<style>
+  :root {
+    --navy:#0b1f3a; --blue:#1859b8; --cyan:#13b8c8; --green:#14804a; --red:#c53b31;
+    --gold:#b88619; --dark:#142033; --muted:#61748f; --lgrey:#eef3f9; --white:#fff;
+    --line:rgba(15,42,74,.10); --shadow:0 12px 36px rgba(13,29,55,.08);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:Aptos,"Trebuchet MS","Segoe UI",sans-serif; color:var(--dark);
+         background:linear-gradient(180deg,#f6f8fc 0%,#ecf1f8 60%,#f8fafc 100%); min-height:100vh; }
+  nav { background:linear-gradient(135deg,var(--navy),var(--blue)); color:#fff; height:64px;
+        display:flex; align-items:center; justify-content:space-between; padding:0 24px; }
+  nav .brand { font-weight:800; font-size:19px; } nav .brand span { color:#7fe3ee; }
+  nav .right { display:flex; gap:12px; align-items:center; font-size:14px; }
+  nav select { padding:6px 10px; border-radius:8px; border:none; font:inherit; }
+  main { max-width:1180px; margin:0 auto; padding:24px 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow);
+          padding:20px; margin-bottom:18px; }
+  h2 { font-size:18px; margin-bottom:12px; } h3 { font-size:15px; margin:14px 0 8px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px; }
+  .tab { padding:9px 16px; border-radius:999px; border:1px solid var(--line); background:#fff;
+         cursor:pointer; font-weight:600; color:var(--muted); }
+  .tab.active { background:var(--navy); color:#fff; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .stat { background:var(--lgrey); border-radius:12px; padding:14px; }
+  .stat .v { font-size:24px; font-weight:800; } .stat .l { font-size:12px; color:var(--muted);
+          text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
+  label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin:10px 0 4px;
+          text-transform:uppercase; letter-spacing:.04em; }
+  input, select, textarea { width:100%; padding:10px 12px; border:1px solid #cdd8e6; border-radius:10px;
+          font:inherit; background:#fff; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .btn { padding:10px 16px; border-radius:10px; border:none; font:inherit; font-weight:700; cursor:pointer;
+         background:var(--blue); color:#fff; }
+  .btn.secondary { background:#fff; color:var(--blue); border:1px solid #bcd0ec; }
+  .btn.danger { background:#fff; color:var(--red); border:1px solid #f0c4c0; }
+  .btn:disabled { opacity:.6; cursor:wait; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
+       padding:8px; border-bottom:1px solid var(--line); }
+  td { padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr.click:hover { background:#f5f8fd; cursor:pointer; }
+  .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:700;
+           background:var(--lgrey); color:var(--navy); white-space:nowrap; }
+  .badge.good { background:#e3f5ea; color:var(--green); } .badge.bad { background:#fbe6e4; color:var(--red); }
+  .badge.wait { background:#fdf3dc; color:var(--gold); }
+  .alert { padding:10px 14px; border-radius:10px; font-size:14px; margin:10px 0; }
+  .alert.error { background:#fbe6e4; color:var(--red); } .alert.ok { background:#e3f5ea; color:var(--green); }
+  .alert.info { background:#e7f0fc; color:var(--blue); }
+  code, .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+  pre { background:#0f1b2d; color:#d8e4f5; padding:14px; border-radius:10px; overflow-x:auto; font-size:12.5px; }
+  .hidden { display:none !important; }
+  .scroll { overflow-x:auto; }
+  .flex { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  @media (max-width:640px) { nav { padding:0 12px; } nav .brand { font-size:16px; } }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">LegalAI <span>for Business</span></div>
+  <div class="right">
+    <select id="orgSelect" class="hidden" onchange="selectOrg(this.value)"></select>
+    <span id="whoami"></span>
+    <button class="btn secondary hidden" id="logoutBtn" onclick="logout()">Log out</button>
+  </div>
+</nav>
+
+<main>
+  <!-- Login -->
+  <section id="screenLogin" class="card hidden" style="max-width:440px;margin:40px auto;">
+    <h2>Sign in</h2>
+    <p class="muted">We email you a one-time login code.</p>
+    <div id="loginStep1">
+      <label>Work email</label><input id="loginEmail" type="email" placeholder="you@company.com">
+      <button class="btn" style="margin-top:14px;width:100%;" onclick="requestOtp()">Send code</button>
+    </div>
+    <div id="loginStep2" class="hidden">
+      <label>6-digit code</label><input id="otp" maxlength="6">
+      <button class="btn" style="margin-top:14px;width:100%;" onclick="verifyOtp()">Sign in</button>
+    </div>
+    <div id="loginMsg"></div>
+  </section>
+
+  <!-- Create organisation -->
+  <section id="screenCreate" class="card hidden" style="max-width:720px;margin:20px auto;">
+    <h2>Set up your organisation</h2>
+    <p class="muted">Cases you file will be brought in this organisation's name.</p>
+    <div class="row">
+      <div><label>Display name</label><input id="cName" placeholder="Acme Rentals"></div>
+      <div><label>Contact email (receives case updates)</label><input id="cContact" type="email"></div>
+    </div>
+    <div class="row">
+      <div><label>Legal name</label><input id="cLegal" placeholder="Acme Rentals Pvt Ltd"></div>
+      <div><label>Authorised signatory</label><input id="cSignatory"></div>
+    </div>
+    <div class="row">
+      <div><label>City</label><input id="cCity"></div>
+      <div><label>State</label><input id="cState"></div>
+      <div><label>Phone</label><input id="cPhone"></div>
+    </div>
+    <label>Address</label><input id="cAddress">
+    <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:flex-start;margin-top:14px;">
+      <input type="checkbox" id="cTerms" style="width:auto;margin-top:3px;">
+      <span>We have a lawful basis to process the respondents' personal data (DPDP Act 2023), the
+      information we file is accurate, and we understand AI analysis is not legal advice.</span>
+    </label>
+    <button class="btn" style="margin-top:14px;" onclick="createOrg()">Create organisation</button>
+    <div id="createMsg"></div>
+  </section>
+
+  <!-- Console -->
+  <section id="screenConsole" class="hidden">
+    <div class="tabs">
+      <button class="tab active" data-tab="overview" onclick="showTab('overview')">Overview</button>
+      <button class="tab" data-tab="cases" onclick="showTab('cases')">Cases</button>
+      <button class="tab" data-tab="upload" onclick="showTab('upload')">Bulk upload</button>
+      <button class="tab" data-tab="team" onclick="showTab('team')">Team</button>
+      <button class="tab" data-tab="dev" onclick="showTab('dev')">Developers</button>
+    </div>
+
+    <div id="tab-overview">
+      <div class="card"><h2>Recovery overview</h2><div id="statsGrid" class="grid"></div>
+        <p class="muted" id="usageLine" style="margin-top:12px;"></p></div>
+      <div class="card"><h2>By status</h2><div id="statusBreakdown" class="flex"></div></div>
+    </div>
+
+    <div id="tab-cases" class="hidden">
+      <div class="card">
+        <div class="flex" style="margin-bottom:12px;">
+          <input id="caseSearch" placeholder="Search name, email or reference" style="max-width:320px;"
+                 onkeydown="if(event.key==='Enter')loadCases()">
+          <select id="caseStatus" style="max-width:220px;" onchange="loadCases()">
+            <option value="">All statuses</option>
+            <option value="ANALYZED">Ready to invite</option>
+            <option value="INVITE_SENT,RESPONDENT_VIEWED">Invited</option>
+            <option value="NEGOTIATION_OPEN,WAITING_FOR_CLAIMANT,WAITING_FOR_RESPONDENT,MEDIATOR_REVIEW,PROPOSAL_ISSUED,SETTLEMENT_PENDING_CONFIRMATION">In negotiation</option>
+            <option value="SETTLED">Settled</option>
+            <option value="ESCALATED,AUTO_ESCALATED">Escalated</option>
+          </select>
+          <button class="btn secondary" onclick="loadCases()">Refresh</button>
+          <button class="btn" onclick="inviteAllReady()">Invite all ready</button>
+        </div>
+        <div class="scroll"><table>
+          <thead><tr><th>Reference</th><th>Respondent</th><th>Claim</th><th>Status</th><th>Settled</th><th>Filed</th></tr></thead>
+          <tbody id="caseRows"></tbody>
+        </table></div>
+        <p class="muted" id="caseCount" style="margin-top:8px;"></p>
+      </div>
+      <div class="card hidden" id="caseDetail"></div>
+    </div>
+
+    <div id="tab-upload" class="hidden">
+      <div class="card">
+        <h2>File disputes in bulk</h2>
+        <p class="muted">Upload a CSV with one row per dispute. Required columns: <code>respondent_name</code>,
+          <code>respondent_email</code>, <code>reference</code> (your invoice / loan / agreement number).
+          Optional: <code>claim_amount</code>, <code>incident_date</code>, <code>due_date</code>,
+          <code>respondent_phone</code>, <code>respondent_type</code>, <code>details</code>,
+          <code>dispute_text</code> (overrides the template). Re-uploading the same reference is skipped.</p>
+        <div class="row">
+          <div><label>Template</label><select id="tplSelect"></select></div>
+          <div><label>CSV file</label><input type="file" id="csvFile" accept=".csv,text/csv"></div>
+        </div>
+        <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:12px;">
+          <input type="checkbox" id="autoInvite" style="width:auto;"> Send the invite to each respondent automatically after analysis
+        </label>
+        <div class="flex" style="margin-top:14px;">
+          <button class="btn" id="uploadBtn" onclick="uploadCsv()">Upload and file</button>
+          <button class="btn secondary" onclick="downloadSample()">Download sample CSV</button>
+        </div>
+        <div id="uploadResult"></div>
+      </div>
+      <div class="card"><h2>Template preview</h2><p class="muted" id="tplPreview"></p></div>
+    </div>
+
+    <div id="tab-team" class="hidden">
+      <div class="card">
+        <h2>Team</h2>
+        <div class="scroll"><table><thead><tr><th>Email</th><th>Role</th><th></th></tr></thead>
+          <tbody id="memberRows"></tbody></table></div>
+        <h3>Add member</h3>
+        <div class="flex">
+          <input id="memberEmail" type="email" placeholder="colleague@company.com" style="max-width:300px;">
+          <select id="memberRole" style="max-width:140px;"><option value="agent">Agent</option><option value="admin">Admin</option></select>
+          <button class="btn" onclick="addMember()">Add</button>
+        </div>
+        <p class="muted" style="margin-top:8px;">Agents file and work cases. Admins also manage the team, API keys and webhooks.</p>
+        <div id="teamMsg"></div>
+      </div>
+    </div>
+
+    <div id="tab-dev" class="hidden">
+      <div class="card">
+        <h2>API keys</h2>
+        <div class="scroll"><table><thead><tr><th>Name</th><th>Key</th><th>Created</th><th></th></tr></thead>
+          <tbody id="keyRows"></tbody></table></div>
+        <div class="flex" style="margin-top:12px;">
+          <input id="keyName" placeholder="e.g. billing system" style="max-width:260px;">
+          <button class="btn" onclick="createKey()">Create key</button>
+        </div>
+        <div id="keyMsg"></div>
+        <h3>Example: file cases from your system</h3>
+        <pre id="apiExample"></pre>
+      </div>
+      <div class="card">
+        <h2>Webhook</h2>
+        <p class="muted">We POST <code>case.status_changed</code> events (with your reference) to this URL, signed with
+          <code>X-LegalAI-Signature: sha256=HMAC_SHA256(secret, body)</code>.</p>
+        <div class="flex" style="margin-top:10px;">
+          <input id="hookUrl" placeholder="https://your-app.com/legalai-webhook" style="max-width:420px;">
+          <button class="btn" onclick="saveHook()">Save</button>
+          <button class="btn secondary" onclick="testHook()">Send test</button>
+        </div>
+        <div id="hookMsg"></div>
+        <h3>Recent deliveries</h3>
+        <div class="scroll"><table><thead><tr><th>When</th><th>Event</th><th>Result</th></tr></thead>
+          <tbody id="hookRows"></tbody></table></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const API = '';
+let token = localStorage.getItem('legalai_token') || '';
+let orgs = [], org = null, templates = {};
+
+const STATUS = {
+  ANALYZING:['Analysing','wait'], ANALYZED:['Ready to invite',''], INVITE_SENT:['Invited','wait'],
+  RESPONDENT_VIEWED:['Viewed','wait'], NEGOTIATION_OPEN:['Negotiating','wait'],
+  WAITING_FOR_CLAIMANT:['Your turn','wait'], WAITING_FOR_RESPONDENT:['Awaiting respondent','wait'],
+  MEDIATOR_REVIEW:['Mediator reviewing','wait'], PROPOSAL_ISSUED:['Proposal ready','wait'],
+  SETTLEMENT_PENDING_CONFIRMATION:['Confirm settlement','wait'], SETTLING:['Settling','wait'],
+  SETTLED:['Settled','good'], ESCALATED:['Escalated','bad'], AUTO_ESCALATED:['No response','bad'],
+  ABANDONED:['Closed','bad'], CRIMINAL_ADVISORY:['Criminal advisory','bad'],
+};
+const badge = s => { const [l, c] = STATUS[s] || [s, '']; return `<span class="badge ${c}">${l}</span>`; };
+const rs = n => (n || n === 0) ? 'Rs. ' + Number(n).toLocaleString('en-IN') : '—';
+const auth = () => ({ headers: { Authorization: `Bearer ${token}` } });
+const $ = id => document.getElementById(id);
+const msg = (id, text, kind='info') => { $(id).innerHTML = `<div class="alert ${kind}"></div>`; $(id).firstChild.textContent = text; };
+const err = e => e.response?.data?.detail || e.message || 'Something went wrong';
+function show(id) { ['screenLogin','screenCreate','screenConsole'].forEach(s => $(s).classList.toggle('hidden', s !== id)); }
+
+// ── Auth ───────────────────────────────────────────────
+async function requestOtp() {
+  const email = $('loginEmail').value.trim();
+  try {
+    const r = await axios.post(`${API}/api/auth/request-otp`, { email });
+    $('loginStep1').classList.add('hidden'); $('loginStep2').classList.remove('hidden');
+    if (r.data.dev_otp) { $('otp').value = r.data.dev_otp; msg('loginMsg', 'Dev mode: code prefilled.'); }
+    else msg('loginMsg', 'Code sent — check your email.', 'ok');
+  } catch (e) { msg('loginMsg', err(e), 'error'); }
+}
+async function verifyOtp() {
+  try {
+    const r = await axios.post(`${API}/api/auth/verify-otp`, {
+      email: $('loginEmail').value.trim(), otp: $('otp').value.trim(), consent: true });
+    token = r.data.access_token;
+    localStorage.setItem('legalai_token', token);
+    localStorage.setItem('legalai_user', JSON.stringify(r.data.user));
+    boot();
+  } catch (e) { msg('loginMsg', err(e), 'error'); }
+}
+function logout() { localStorage.removeItem('legalai_token'); token = ''; location.reload(); }
+
+async function boot() {
+  if (!token) return show('screenLogin');
+  try {
+    const me = await axios.get(`${API}/api/auth/me`, auth());
+    $('whoami').textContent = me.data.email; $('logoutBtn').classList.remove('hidden');
+    orgs = (await axios.get(`${API}/api/orgs/mine`, auth())).data.organisations;
+  } catch (e) { return logout(); }
+  if (!orgs.length) { $('cContact').value = $('whoami').textContent; return show('screenCreate'); }
+  $('orgSelect').innerHTML = orgs.map(o => `<option value="${o.id}">${o.name}</option>`).join('');
+  $('orgSelect').classList.toggle('hidden', orgs.length < 2);
+  const saved = localStorage.getItem('legalai_org');
+  selectOrg(orgs.some(o => o.id === saved) ? saved : orgs[0].id);
+}
+
+async function createOrg() {
+  try {
+    const r = await axios.post(`${API}/api/orgs`, {
+      name: $('cName').value.trim(), contact_email: $('cContact').value.trim(), accept_terms: $('cTerms').checked,
+      profile: { legal_name: $('cLegal').value.trim() || $('cName').value.trim(), city: $('cCity').value.trim(),
+                 state: $('cState').value.trim(), phone: $('cPhone').value.trim(),
+                 address: $('cAddress').value.trim(), signatory: $('cSignatory').value.trim() } }, auth());
+    localStorage.setItem('legalai_org', r.data.id);
+    boot();
+  } catch (e) { msg('createMsg', err(e), 'error'); }
+}
+
+async function selectOrg(id) {
+  localStorage.setItem('legalai_org', id);
+  $('orgSelect').value = id;
+  org = (await axios.get(`${API}/api/orgs/${id}`, auth())).data;
+  templates = org.templates;
+  $('tplSelect').innerHTML = Object.entries(templates).map(([k, t]) => `<option value="${k}">${t.title}</option>`).join('');
+  $('tplSelect').onchange = () => $('tplPreview').textContent = templates[$('tplSelect').value].text;
+  $('tplPreview').textContent = templates[$('tplSelect').value]?.text || '';
+  $('autoInvite').checked = !!org.settings?.auto_invite;
+  show('screenConsole');
+  showTab('overview');
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  ['overview','cases','upload','team','dev'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+  ({ overview: loadStats, cases: loadCases, team: renderTeam, dev: renderDev })[name]?.();
+}
+
+// ── Overview ───────────────────────────────────────────
+async function loadStats() {
+  const s = (await axios.get(`${API}/api/orgs/${org.id}/stats`, auth())).data;
+  const pct = v => v === null || v === undefined ? '—' : Math.round(v * 100) + '%';
+  $('statsGrid').innerHTML = [
+    [s.total_cases, 'Cases filed'], [s.open_cases, 'Open'], [rs(s.amount_claimed), 'Amount claimed'],
+    [rs(s.amount_settled), 'Amount settled'], [pct(s.settlement_rate), 'Settlement rate (closed)'],
+    [s.avg_days_to_settle ?? '—', 'Avg days to settle'],
+  ].map(([v, l]) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  $('statusBreakdown').innerHTML = Object.entries(s.by_status).map(([k, v]) => `${badge(k)} <b>${v}</b>`).join(' &nbsp; ') || '<span class="muted">No cases yet.</span>';
+  const u = s.usage;
+  $('usageLine').textContent = `Plan: ${u.plan} — ${u.this_month} case(s) filed this month` +
+    (u.monthly_limit ? ` of ${u.monthly_limit}.` : ' (unlimited).');
+}
+
+// ── Cases ──────────────────────────────────────────────
+let lastCases = [];
+async function loadCases() {
+  const params = new URLSearchParams({ limit: 200 });
+  if ($('caseStatus').value) params.set('status', $('caseStatus').value);
+  if ($('caseSearch').value.trim()) params.set('q', $('caseSearch').value.trim());
+  const r = (await axios.get(`${API}/api/orgs/${org.id}/cases?${params}`, auth())).data;
+  lastCases = r.cases;
+  $('caseRows').innerHTML = r.cases.map(c => `
+    <tr class="click" onclick="openCase('${c.id}')">
+      <td class="mono">${c.reference || '—'}</td>
+      <td>${c.respondent_name}<div class="muted">${c.respondent_email}</div></td>
+      <td>${rs(c.claim_amount)}</td><td>${badge(c.status)}</td><td>${rs(c.settled_amount)}</td>
+      <td>${(c.created_at || '').slice(0, 10)}</td></tr>`).join('') ||
+    '<tr><td colspan="6" class="muted">No cases match.</td></tr>';
+  $('caseCount').textContent = `${r.total} case(s)`;
+}
+
+async function openCase(id) {
+  const c = (await axios.get(`${API}/api/orgs/${org.id}/cases/${id}`, auth())).data;
+  const docs = c.documents_data || {};
+  const links = [['Demand letter', docs.demand_letter_url], ['Court file', docs.court_file_url],
+                 ['Settlement agreement', c.settlement_url], ['Breach notice', c.breach_notice_url]]
+    .filter(([, u]) => u).map(([l, u]) => `<a class="btn secondary" href="${u}" target="_blank" rel="noopener">${l}</a>`).join(' ');
+  $('caseDetail').classList.remove('hidden');
+  $('caseDetail').innerHTML = `
+    <div class="flex" style="justify-content:space-between;"><h2>${c.external_reference || c.id.slice(0,8)} — ${c.respondent_name}</h2>${badge(c.status)}</div>
+    <p class="muted">${c.respondent_email} · Claim ${rs(c.claim_amount)}${c.settled_amount ? ' · Settled ' + rs(c.settled_amount) : ''}</p>
+    <h3>Dispute</h3><p style="font-size:14px;line-height:1.6;">${c.dispute_text}</p>
+    <h3>Analysis</h3><p style="font-size:14px;">${(c.intake_data || {}).dispute_type || '—'} · Legal standing
+      <b>${(c.legal_data || {}).legal_standing || '—'}</b> · Forum ${(c.legal_data || {}).forum_name || '—'}</p>
+    <div class="flex" style="margin-top:14px;">${links}
+      ${c.status === 'ANALYZED' ? `<button class="btn" onclick="inviteCase('${c.id}')">Send invite</button>` : ''}
+      <a class="btn secondary" href="/" title="Negotiate in the case workspace">Open in case workspace</a></div>
+    <div id="caseMsg"></div>`;
+  $('caseDetail').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function inviteCase(id) {
+  try { await axios.post(`${API}/api/orgs/${org.id}/cases/${id}/invite`, {}, auth()); await openCase(id); loadCases(); }
+  catch (e) { msg('caseMsg', err(e), 'error'); }
+}
+async function inviteAllReady() {
+  const ready = lastCases.filter(c => c.status === 'ANALYZED');
+  if (!ready.length) return alert('No cases are ready to invite.');
+  if (!confirm(`Send invites for ${ready.length} case(s)?`)) return;
+  for (const c of ready) { try { await axios.post(`${API}/api/orgs/${org.id}/cases/${c.id}/invite`, {}, auth()); } catch (_) {} }
+  loadCases();
+}
+
+// ── Upload ─────────────────────────────────────────────
+async function uploadCsv() {
+  const f = $('csvFile').files[0];
+  if (!f) return msg('uploadResult', 'Choose a CSV file first.', 'error');
+  const fd = new FormData();
+  fd.append('file', f); fd.append('template', $('tplSelect').value); fd.append('auto_invite', $('autoInvite').checked);
+  $('uploadBtn').disabled = true;
+  try {
+    const r = (await axios.post(`${API}/api/orgs/${org.id}/cases/bulk-csv`, fd, auth())).data;
+    const s = r.summary;
+    $('uploadResult').innerHTML = `<div class="alert ${s.errors ? 'info' : 'ok'}">
+      ${s.created} filed · ${s.duplicates} skipped (already filed) · ${s.errors} with errors.
+      Analysis runs in the background — see the Cases tab.</div>` +
+      (r.errors.length ? `<div class="scroll"><table><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>${
+        r.errors.map(e => `<tr><td>${e.row}</td><td>${e.error}</td></tr>`).join('')}</tbody></table></div>` : '');
+  } catch (e) { msg('uploadResult', err(e), 'error'); }
+  $('uploadBtn').disabled = false;
+}
+function downloadSample() {
+  const csv = 'respondent_name,respondent_email,reference,claim_amount,incident_date,due_date,respondent_phone,details\n' +
+    'Ravi Traders,accounts@ravitraders.example,INV-1001,48500,2026-05-15,2026-06-15,9876543210,\n' +
+    'Meena Kumar,meena@example.com,AGR-77,25000,2026-04-01,2026-09-30,,Rent for July-September\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'legalai-sample.csv'; a.click();
+}
+
+// ── Team ───────────────────────────────────────────────
+function renderTeam() {
+  $('memberRows').innerHTML = org.members.map(m => `<tr><td>${m.email}</td><td>${m.role}</td>
+    <td>${m.role !== 'owner' ? `<button class="btn danger" onclick="removeMember('${m.email}')">Remove</button>` : ''}</td></tr>`).join('');
+}
+async function addMember() {
+  try {
+    org = (await axios.post(`${API}/api/orgs/${org.id}/members`, { email: $('memberEmail').value.trim(), role: $('memberRole').value }, auth())).data;
+    $('memberEmail').value = ''; renderTeam(); msg('teamMsg', 'Member added. They sign in with their own email.', 'ok');
+  } catch (e) { msg('teamMsg', err(e), 'error'); }
+}
+async function removeMember(email) {
+  if (!confirm(`Remove ${email}?`)) return;
+  try { org = (await axios.delete(`${API}/api/orgs/${org.id}/members/${encodeURIComponent(email)}`, auth())).data; renderTeam(); }
+  catch (e) { msg('teamMsg', err(e), 'error'); }
+}
+
+// ── Developers ─────────────────────────────────────────
+function renderDev() {
+  $('keyRows').innerHTML = org.api_keys.map(k => `<tr><td>${k.name}</td><td class="mono">${k.prefix}…</td>
+    <td>${(k.created_at || '').slice(0, 10)}</td>
+    <td>${k.revoked ? '<span class="badge bad">Revoked</span>' : `<button class="btn danger" onclick="revokeKey('${k.id}')">Revoke</button>`}</td></tr>`).join('') ||
+    '<tr><td colspan="4" class="muted">No API keys yet.</td></tr>';
+  $('apiExample').textContent =
+`curl -X POST ${location.origin}/api/orgs/${org.id}/cases/bulk \\
+  -H "X-API-Key: lai_..." -H "Content-Type: application/json" \\
+  -d '{"template": "overdue_invoice", "auto_invite": true, "rows": [
+        {"respondent_name": "Ravi Traders", "respondent_email": "accounts@ravitraders.example",
+         "reference": "INV-1001", "claim_amount": 48500, "due_date": "2026-06-15"}]}'`;
+  $('hookUrl').value = org.webhook?.url || '';
+  loadDeliveries();
+}
+async function createKey() {
+  try {
+    const r = (await axios.post(`${API}/api/orgs/${org.id}/api-keys`, { name: $('keyName').value.trim() || 'API key' }, auth())).data;
+    $('keyMsg').innerHTML = `<div class="alert ok">Copy this key now — it won't be shown again:<br><code></code></div>`;
+    $('keyMsg').querySelector('code').textContent = r.api_key;
+    org = (await axios.get(`${API}/api/orgs/${org.id}`, auth())).data; renderDev();
+  } catch (e) { msg('keyMsg', err(e), 'error'); }
+}
+async function revokeKey(id) {
+  if (!confirm('Revoke this key? Systems using it will stop working.')) return;
+  await axios.delete(`${API}/api/orgs/${org.id}/api-keys/${id}`, auth());
+  org = (await axios.get(`${API}/api/orgs/${org.id}`, auth())).data; renderDev();
+}
+async function saveHook() {
+  try {
+    const r = (await axios.put(`${API}/api/orgs/${org.id}/webhook`, { url: $('hookUrl').value.trim() }, auth())).data;
+    $('hookMsg').innerHTML = `<div class="alert ok">Saved. Signing secret (shown once):<br><code></code></div>`;
+    $('hookMsg').querySelector('code').textContent = r.secret;
+    org = (await axios.get(`${API}/api/orgs/${org.id}`, auth())).data;
+  } catch (e) { msg('hookMsg', err(e), 'error'); }
+}
+async function testHook() {
+  try {
+    const d = (await axios.post(`${API}/api/orgs/${org.id}/webhook/test`, {}, auth())).data.delivery;
+    msg('hookMsg', d?.ok ? 'Test delivered successfully.' : `Test failed: ${d?.error || 'no response'}`, d?.ok ? 'ok' : 'error');
+    loadDeliveries();
+  } catch (e) { msg('hookMsg', err(e), 'error'); }
+}
+async function loadDeliveries() {
+  try {
+    const d = (await axios.get(`${API}/api/orgs/${org.id}/webhook/deliveries`, auth())).data.deliveries;
+    $('hookRows').innerHTML = d.map(x => `<tr><td>${(x.at || '').replace('T', ' ').slice(0, 19)}</td><td>${x.event}</td>
+      <td>${x.ok ? '<span class="badge good">Delivered</span>' : `<span class="badge bad">${x.error || 'Failed'}</span>`}</td></tr>`).join('') ||
+      '<tr><td colspan="3" class="muted">No deliveries yet.</td></tr>';
+  } catch (_) { $('hookRows').innerHTML = '<tr><td colspan="3" class="muted">Admins only.</td></tr>'; }
+}
+
+boot();
+</script>
+</body>
+</html>

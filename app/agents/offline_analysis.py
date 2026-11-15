@@ -67,8 +67,9 @@ CATEGORY_RULES = [
 ]
 
 EVIDENCE_PATTERNS = {
-    "Written agreement / contract":  r"\b(agreement|contract|lease|leave and licen[cs]e|offer letter|appointment letter)\b",
-    "Payment proof (bank/UPI/receipt)": r"\b(receipt|bank (transfer|statement)|upi|neft|imps|paid via|transaction|invoice)\b",
+    "Written agreement / contract":  r"\b(agreement|contract|lease|leave and licen[cs]e|offer letter|appointment letter|purchase order|sanction letter|work order)\b",
+    "Payment proof (bank/UPI/receipt)": r"\b(receipt|bank (transfer|statement)|upi|neft|imps|paid via|transaction|invoice|ledger|statement of account|account statement)\b",
+    "Delivery / performance proof":   r"\b(delivery (challan|note|receipt)|proof of delivery|e-?way bill|completion certificate|goods received)\b",
     "Written communication (email/WhatsApp/SMS)": r"\b(e-?mails?|whatsapp|sms|messages?|chat|letter)\b",
     "Formal notice already sent":     r"\b(notice|legal notice|written notice)\b",
     "Photographs / video":            r"\b(photos?|photographs?|pictures?|videos?|recording)\b",

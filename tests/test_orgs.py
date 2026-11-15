@@ -245,3 +245,16 @@ def test_only_admins_manage_webhooks(client, login, webhook_sink):
     agent = login(agent_email)
     r = client.put(f"/api/orgs/{org['id']}/webhook", headers=agent, json={"url": "https://hooks.example.com/x"})
     assert r.status_code == 403
+
+
+def test_template_narrative_is_clean_and_uses_evidence():
+    from app.core import b2b
+    org = {"name": "Acme", "contact_email": "legal@acme.test",
+           "profile": {"legal_name": "Acme Pvt Ltd", "city": "Pune", "state": "Maharashtra"}}
+    row = {"respondent_name": "Meena Stores", "respondent_email": "m@shop.test", "reference": "INV-9",
+           "claim_amount": "12,000", "incident_date": "20/05/2026", "due_date": "2026-06-20",
+           "evidence": "invoice, delivery challan"}
+    text = b2b.build_case_data(org, row, "overdue_invoice")["dispute_text"]
+    assert "not stated" not in text and "{" not in text
+    assert "20 May 2026" in text and "20 June 2026" in text
+    assert "Supporting documents available: invoice, delivery challan." in text
