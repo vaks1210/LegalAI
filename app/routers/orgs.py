@@ -106,6 +106,7 @@ def _public_org(org: dict) -> dict:
         "templates": {**{k: {**v, "builtin": True} for k, v in b2b.BUILTIN_TEMPLATES.items()},
                       **(org.get("templates") or {})},
         "settings": org.get("settings", {}),
+        "payee": org.get("payee"),
         "webhook": ({"url": org["webhook"]["url"], "updated_at": org["webhook"].get("updated_at")}
                     if org.get("webhook") else None),
         "created_at": org.get("created_at"),
@@ -150,11 +151,20 @@ async def get_org(actor: OrgActor = Depends(org_actor)):
     return _public_org(actor.org)
 
 
+class Payee(BaseModel):
+    upi_id:         str = Field(default="", max_length=80)
+    account_name:   str = Field(default="", max_length=120)
+    account_number: str = Field(default="", max_length=34)
+    ifsc:           str = Field(default="", max_length=11)
+    bank:           str = Field(default="", max_length=80)
+
+
 class OrgUpdate(BaseModel):
     name:          str | None = Field(default=None, min_length=2, max_length=120)
     contact_email: str | None = None
     profile:       OrgProfile | None = None
     auto_invite:   bool | None = None
+    payee:         Payee | None = None
 
 
 @router.patch("/{org_id}")
@@ -170,6 +180,8 @@ async def update_org(body: OrgUpdate, actor: OrgActor = Depends(org_actor)):
             org["profile"] = body.profile.model_dump()
         if body.auto_invite is not None:
             org.setdefault("settings", {})["auto_invite"] = body.auto_invite
+        if body.payee is not None:
+            org["payee"] = body.payee.model_dump()
     return _public_org(cosmos_service.mutate_org(actor.org["id"], apply))
 
 

@@ -123,6 +123,7 @@
       <button class="tab" data-tab="cases" onclick="showTab('cases')">Cases</button>
       <button class="tab" data-tab="upload" onclick="showTab('upload')">Bulk upload</button>
       <button class="tab" data-tab="team" onclick="showTab('team')">Team</button>
+      <button class="tab" data-tab="settings" onclick="showTab('settings')">Settings</button>
       <button class="tab" data-tab="dev" onclick="showTab('dev')">Developers</button>
     </div>
 
@@ -194,6 +195,28 @@
         </div>
         <p class="muted" style="margin-top:8px;">Agents file and work cases. Admins also manage the team, API keys and webhooks.</p>
         <div id="teamMsg"></div>
+      </div>
+    </div>
+
+    <div id="tab-settings" class="hidden">
+      <div class="card">
+        <h2>Where settlements are paid</h2>
+        <p class="muted">When a case settles, the respondent is sent these details with the case reference.
+          (With a Razorpay account configured on the server, they get a pay-now link instead and payment is confirmed automatically.)</p>
+        <div class="row">
+          <div><label>UPI ID</label><input id="pUpi" placeholder="business@okbank"></div>
+          <div><label>Account name</label><input id="pName"></div>
+        </div>
+        <div class="row">
+          <div><label>Account number</label><input id="pAcct"></div>
+          <div><label>IFSC</label><input id="pIfsc"></div>
+          <div><label>Bank</label><input id="pBank"></div>
+        </div>
+        <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:14px;">
+          <input type="checkbox" id="sAutoInvite" style="width:auto;"> By default, invite respondents automatically after analysis
+        </label>
+        <button class="btn" style="margin-top:14px;" onclick="saveSettings()">Save settings</button>
+        <div id="settingsMsg"></div>
       </div>
     </div>
 
@@ -313,8 +336,8 @@ async function selectOrg(id) {
 
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['overview','cases','upload','team','dev'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
-  ({ overview: loadStats, cases: loadCases, team: renderTeam, dev: renderDev })[name]?.();
+  ['overview','cases','upload','team','settings','dev'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+  ({ overview: loadStats, cases: loadCases, team: renderTeam, settings: renderSettings, dev: renderDev })[name]?.();
 }
 
 // ── Overview ───────────────────────────────────────────
@@ -360,6 +383,10 @@ async function openCase(id) {
   $('caseDetail').innerHTML = `
     <div class="flex" style="justify-content:space-between;"><h2>${c.external_reference || c.id.slice(0,8)} — ${c.respondent_name}</h2>${badge(c.status)}</div>
     <p class="muted">${c.respondent_email} · Claim ${rs(c.claim_amount)}${c.settled_amount ? ' · Settled ' + rs(c.settled_amount) : ''}</p>
+    ${c.payment ? `<p style="margin-top:6px;">Payment: ${c.payment.status === 'paid'
+        ? `<span class="badge good">Paid ${rs(c.payment.amount)}</span> <span class="muted">${(c.payment.paid_at || '').slice(0,10)} · ${c.payment.confirmed_by}</span>`
+        : `<span class="badge wait">Due ${rs(c.payment.amount)} by ${(c.payment.due_at || '').slice(0,10)}</span>
+           ${c.payment.link_url ? `<a href="${c.payment.link_url}" target="_blank" rel="noopener">payment link</a>` : ''}`}</p>` : ''}
     <h3>Dispute</h3><p style="font-size:14px;line-height:1.6;">${c.dispute_text}</p>
     <h3>Analysis</h3><p style="font-size:14px;">${(c.intake_data || {}).dispute_type || '—'} · Legal standing
       <b>${(c.legal_data || {}).legal_standing || '—'}</b> · Forum ${(c.legal_data || {}).forum_name || '—'}</p>
@@ -423,6 +450,26 @@ async function removeMember(email) {
   if (!confirm(`Remove ${email}?`)) return;
   try { org = (await axios.delete(`${API}/api/orgs/${org.id}/members/${encodeURIComponent(email)}`, auth())).data; renderTeam(); }
   catch (e) { msg('teamMsg', err(e), 'error'); }
+}
+
+// ── Settings ───────────────────────────────────────────
+const unesc = v => { const t = document.createElement('textarea'); t.innerHTML = v || ''; return t.value; };
+function renderSettings() {
+  const p = org.payee || {};
+  $('pUpi').value = unesc(p.upi_id); $('pName').value = unesc(p.account_name);
+  $('pAcct').value = unesc(p.account_number); $('pIfsc').value = unesc(p.ifsc); $('pBank').value = unesc(p.bank);
+  $('sAutoInvite').checked = !!org.settings?.auto_invite;
+}
+async function saveSettings() {
+  try {
+    org = (await axios.patch(`${API}/api/orgs/${org.id}`, {
+      auto_invite: $('sAutoInvite').checked,
+      payee: { upi_id: $('pUpi').value.trim(), account_name: $('pName').value.trim(),
+               account_number: $('pAcct').value.trim(), ifsc: $('pIfsc').value.trim().toUpperCase(),
+               bank: $('pBank').value.trim() } }, auth())).data;
+    $('autoInvite').checked = !!org.settings?.auto_invite;
+    msg('settingsMsg', 'Settings saved.', 'ok');
+  } catch (e) { msg('settingsMsg', err(e), 'error'); }
 }
 
 // ── Developers ─────────────────────────────────────────

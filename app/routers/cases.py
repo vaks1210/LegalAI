@@ -450,9 +450,8 @@ async def confirm_payment(
     cosmos_service.set_settlement_honored(case_id, honored)
 
     if honored:
-        cosmos_service.update_case(case_id, {
-            "payment_confirmed_at": datetime.now(timezone.utc).isoformat()
-        })
+        from app.services import payments
+        payments.mark_paid(case_id, "claimant")
         return {"message": "Payment confirmed. Case fully resolved.", "outcome": "PAYMENT_RECEIVED"}
 
     background_tasks.add_task(in_thread(_generate_and_send_breach_notice), case_id)

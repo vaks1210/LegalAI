@@ -204,7 +204,7 @@ class CosmosService:
         "respondent_name", "respondent_email", "respondent_type", "respondent_company_name",
         "claim_amount", "currency", "dispute_text", "incident_date", "evidence_files",
         "respondent_version", "respondent_counter_amount",
-        "settlement_url", "settled_amount", "settled_at",
+        "settlement_url", "settled_amount", "settled_at", "payment", "settlement_sha256",
     )
     RESPONDENT_INTAKE_FIELDS = ("dispute_type", "severity", "key_issues", "key_facts")
     RESPONDENT_LEGAL_FIELDS = (

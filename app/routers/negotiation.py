@@ -735,11 +735,42 @@ async def _handle_settlement(case_id: str):
                 download_url=settlement_url or _portal_url(case, "claimant" if to_email == case["claimant_email"] else "respondent"),
             )
 
+        _request_payment(case_id)
         logger.info(f"Case settled | case_id={case_id} | amount=Rs.{settled_amount:,.0f}")
 
     except Exception as e:
         logger.error(f"Settlement handling failed | case_id={case_id} | error={e}", exc_info=True)
         cosmos_service.update_case(case_id, {"settlement_error": str(e), "settlement_error_at": _now()})
+
+
+def _request_payment(case_id: str) -> None:
+    """Create the payment request for a settled monetary case and tell the respondent how to pay."""
+    from app.services import payments
+    try:
+        case = cosmos_service.get_case(case_id)
+        payment = payments.create_payment_request(case)
+        if not payment or payment.get("status") == "paid":
+            return
+        due = (payment.get("due_at") or "")[:10]
+        if payment.get("link_url"):
+            how, link, label = "Pay securely online using the link below.", payment["link_url"], "Pay now"
+        else:
+            payee = payment.get("payee") or {}
+            parts = [f"UPI: {payee['upi_id']}" if payee.get("upi_id") else "",
+                     (f"Bank transfer to {payee.get('account_name', '')}, A/c {payee['account_number']}, "
+                      f"IFSC {payee.get('ifsc', '')}") if payee.get("account_number") else ""]
+            details = "; ".join(p for p in parts if p) or "as agreed with the claimant"
+            how = f"Pay {details}, quoting reference {payment['reference']}."
+            link, label = _portal_url(case, "respondent"), "View settlement"
+        email_service.send_case_update(
+            to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case_id,
+            headline=f"Payment due: Rs. {payment['amount']:,.0f} by {due}",
+            summary=f"Under your settlement agreement, Rs. {payment['amount']:,.0f} is due to "
+                    f"{case['claimant_name']} by {due}. {how}",
+            portal_url=link, action_label=label,
+        )
+    except Exception:
+        logger.exception(f"Payment request failed | case_id={case_id}")
 
 
 async def _handle_escalation(case_id: str):
