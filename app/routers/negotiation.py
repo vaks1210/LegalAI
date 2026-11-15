@@ -699,15 +699,20 @@ async def _handle_escalation(case_id: str):
         case = cosmos_service.get_case(case_id)
         cosmos_service.transition_case(case_id, CaseStatus.ESCALATING, {"action_required_by": None})
 
-        # Generate mediation certificate
-        cert_bytes = _generate_mediation_certificate(case)
-        cert_blob  = f"mediation_cert_{case_id}.pdf"
-        blob_service.upload("pdfs", cert_blob, cert_bytes)
-        cert_url = blob_service.generate_download_url("pdfs", cert_blob)
+        # A certificate failure must not strand the case in ESCALATING
+        # (no deadline there, so nothing would ever move it on).
+        try:
+            cert_bytes = _generate_mediation_certificate(case)
+            cert_blob  = f"mediation_cert_{case_id}.pdf"
+            blob_service.upload("pdfs", cert_blob, cert_bytes)
+            cert_url = blob_service.generate_download_url("pdfs", cert_blob)
+        except Exception:
+            logger.exception(f"Mediation certificate failed during escalation | case_id={case_id}")
+            cert_url = None
 
         # Use court file if already generated, else use cert
         docs_data = case.get("documents_data") or {}
-        court_url = docs_data.get("court_file_url") or cert_url
+        court_url = docs_data.get("court_file_url") or cert_url or _portal_url(case, "claimant")
 
         cosmos_service.transition_case(
             case_id,

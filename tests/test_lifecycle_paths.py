@@ -418,3 +418,15 @@ def test_settlement_completes_even_if_agreement_pdf_fails_then_regenerates(clien
     r = client.get(f"/api/documents/{case_id}/settlement", headers=headers)
     assert r.status_code == 200, r.text
     assert calls["n"] == 2
+
+
+def test_escalation_completes_even_if_certificate_fails(client, login, monkeypatch):
+    import app.agents.document_agent as da
+
+    def boom(case):
+        raise RuntimeError("renderer down")
+    monkeypatch.setattr(da, "_generate_mediation_certificate", boom)
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    for rnd in (1, 2, 3):
+        _play_round(client, case_id, headers, resp_email, token, rnd)
+    assert _status(client, case_id) == "ESCALATED"
