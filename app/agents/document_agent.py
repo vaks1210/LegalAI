@@ -886,6 +886,7 @@ async def _generate_settlement_pdf(
 ) -> bytes:
     """Generate settlement agreement PDF."""
     actions = await _settlement_actions(case)
+    agreed_on = _fmt_date(case.get("settled_at"))  # stable if regenerated later
 
     context = f"""
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
@@ -894,7 +895,7 @@ Dispute type: {intake.get('dispute_category', case.get('track'))}
 Original claim: Rs. {(case.get('claim_amount') or 0):,.0f}
 Agreed settlement: {"; ".join(actions) if actions else f"Rs. {settled_amount:,.0f}"}
 Governing state: {case['claimant_state']}
-Settlement date: {_today()}
+Settlement date: {agreed_on}
 Track: {track}
 Key issues resolved: {legal.get('key_legal_issues', [])}
 """
@@ -947,7 +948,7 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
 
     # Preamble
     story.append(_body_para(
-        f"This Settlement Agreement (\"Agreement\") is entered into on {_today()} "
+        f"This Settlement Agreement (\"Agreement\") is entered into on {agreed_on} "
         f"between {case['claimant_name']} (\"Claimant\") and "
         f"{case['respondent_name']} (\"Respondent\") through AI-assisted mediation "
         f"conducted by LegalAI Resolver."
@@ -990,9 +991,9 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
                       ParagraphStyle("SN", fontName="Helvetica-Bold", fontSize=9)),
         ],
         [
-            Paragraph(f"Date: {_today()}",
+            Paragraph(f"Date: {agreed_on}",
                       ParagraphStyle("SD", fontName="Helvetica", fontSize=8, textColor=MUTED)),
-            Paragraph(f"Date: {_today()}",
+            Paragraph(f"Date: {agreed_on}",
                       ParagraphStyle("SD", fontName="Helvetica", fontSize=8, textColor=MUTED)),
         ],
     ]
