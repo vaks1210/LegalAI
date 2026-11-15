@@ -28,6 +28,15 @@ validate_security_settings()
 async def lifespan(_app: FastAPI):
     logger.info(f"LegalAI Resolver v2.1 starting | env={settings.ENVIRONMENT}")
     logger.info(f"Backends | {settings.backend_summary()}")
+    if settings.is_production:
+        local = {k: v for k, v in settings.backend_summary().items()
+                 if v in ("sqlite", "local_disk", "offline", "local_rules", "local_outbox")}
+        if local:
+            logger.warning(
+                f"PRODUCTION is using local fallbacks: {local}. Data on local disk is lost if "
+                "the host is replaced, and offline mode gives rule-based analysis only. "
+                "Configure the corresponding cloud services if this is not intended."
+            )
     if not settings.is_production and not settings.use_sendgrid:
         logger.warning(
             "DEV MODE: no email provider — login codes are returned in the API "
