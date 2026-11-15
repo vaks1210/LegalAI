@@ -17,3 +17,14 @@ jobs:
       - run: pip install -r requirements-dev.txt
       # Runs fully offline: SQLite, local files, rule-based agents, email outbox.
       - run: pytest -q
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit
+      # Fails when a pinned dependency has a published vulnerability.
+      - run: pip-audit -r requirements.txt

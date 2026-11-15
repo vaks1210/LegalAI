@@ -15,6 +15,19 @@ class LLMNotConfigured(RuntimeError):
     """
 
 
+def log_llm_fallback(log, agent: str, error: Exception, **context) -> None:
+    """
+    Offline mode is expected, not an error: log it quietly. A real LLM
+    failure (bad key, outage, bad output) is logged as an error with a
+    traceback so it isn't lost in noise.
+    """
+    extra = "".join(f" | {k}={v}" for k, v in context.items())
+    if isinstance(error, LLMNotConfigured):
+        log.info(f"{agent}: offline mode — rule-based fallback used{extra}")
+    else:
+        log.error(f"{agent} failed — fallback used{extra} | error={error}", exc_info=error)
+
+
 class OpenAIService:
     """
     Single LLM gateway. Provider is chosen from configuration:

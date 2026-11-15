@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 from app.core.coerce import to_number
 from app.core.legal_reference import (
     get_consumer_forum_tier,
@@ -566,7 +566,7 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Legal Agent failed: {e}")
+        log_llm_fallback(logger, "Legal Agent", e)
         return _fallback_legal_output(case, track)
 
 

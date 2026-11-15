@@ -1,6 +1,6 @@
 import logging
 import re
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 
 logger = logging.getLogger(__name__)
 
@@ -356,7 +356,7 @@ MANDATORY INSTRUCTIONS FOR THIS ROUND:
         return result
 
     except Exception as e:
-        logger.error(f"Negotiation Agent failed | round={round_number} | error={e}")
+        log_llm_fallback(logger, "Negotiation Agent", e, round=round_number)
         return _fallback_proposal(case, round_number, claimant_offer, respondent_offer, analytics)
 
 

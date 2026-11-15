@@ -1,5 +1,5 @@
 import logging
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +351,7 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Intake Agent failed: {e}")
+        log_llm_fallback(logger, "Intake Agent", e)
         return _fallback_intake(case, track, str(e))
 
 

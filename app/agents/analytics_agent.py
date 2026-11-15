@@ -1,5 +1,5 @@
 import logging
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 from app.core.coerce import to_number
 
 logger = logging.getLogger(__name__)
@@ -454,7 +454,7 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Analytics Agent failed: {e}", exc_info=True)
+        log_llm_fallback(logger, "Analytics Agent", e)
         return _fallback_analytics(case, track, intake_data, legal_data)
 
 

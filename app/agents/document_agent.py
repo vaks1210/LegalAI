@@ -12,7 +12,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer,
     HRFlowable, Table, TableStyle, KeepTogether,
 )
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
 
@@ -411,7 +411,8 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
             temperature=0.3,
             max_tokens=1500,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_demand_letter", llm_err)
         content = {
             "subject_line": "Re: Legal Notice",
             "paragraph_1":  case["dispute_text"][:400],
@@ -547,7 +548,8 @@ Relief available: {legal.get('relief_available', [])}
             temperature=0.2,
             max_tokens=2000,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_court_file", llm_err)
         content = {
             "case_summary":         case["dispute_text"][:300],
             "plaint_averments":     ["Facts as stated in dispute description."],
@@ -792,7 +794,8 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
             temperature=0.2,
             max_tokens=3000,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_settlement_pdf", llm_err)
         # Basic fallback clauses
         content = {f"clause_{i}_title": f"Clause {i}" for i in range(1, 12)}
         content.update({f"clause_{i}_text": "To be filled." for i in range(1, 12)})
@@ -962,7 +965,8 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
             temperature=0.2,
             max_tokens=2000,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_fir_advisory", llm_err)
         content = {
             "advisory_summary":    "This case involves criminal elements requiring police intervention.",
             "ipc_sections_to_cite": legal.get("ipc_sections", []),

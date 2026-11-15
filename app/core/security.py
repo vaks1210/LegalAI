@@ -1,7 +1,8 @@
 import secrets
 import logging
 from datetime import datetime, timedelta, timezone
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError  # noqa: F401  (re-exported for callers)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def decode_token(token: str) -> dict:
     """
     Decode and validate a JWT token.
     Returns the payload dict.
-    Raises jose.JWTError if invalid, expired, or tampered.
+    Raises jwt.PyJWTError if invalid, expired, or tampered.
     """
     return jwt.decode(
         token,

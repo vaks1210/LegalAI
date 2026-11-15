@@ -143,7 +143,8 @@ Classify this dispute into exactly one track.
         return result
 
     except Exception as e:
-        logger.warning(f"Case router LLM unavailable ({e}) — using rule-based routing")
+        from app.services.openai_service import log_llm_fallback
+        log_llm_fallback(logger, "Case router", e)
         # Rule-based routing still detects criminal red flags, so violent or
         # criminal matters are never sent to mediation when the LLM is down.
         from app.agents import offline_analysis
