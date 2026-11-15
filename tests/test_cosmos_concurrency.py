@@ -91,3 +91,24 @@ def test_gives_up_cleanly_after_max_retries(cosmos):
     always_conflict.replace_item = replace_conflict
     with pytest.raises(RuntimeError):
         cosmos._mutate(always_conflict, "c2", lambda d: None, retries=3)
+
+
+def test_azure_blob_urls_are_re_signed_for_the_right_file(monkeypatch):
+    from app.services.blob_service import BlobService
+    svc = object.__new__(BlobService)
+    svc.local, svc.client = False, None
+    calls = []
+    monkeypatch.setattr(svc, "generate_download_url",
+                        lambda key, name, hours=72: calls.append((key, name)) or f"fresh://{key}/{name}")
+
+    old = ("https://acct.blob.core.windows.net/generated-pdfs/demand_letter_abc.pdf"
+           "?se=2026-01-01&sig=EXPIRED")
+    assert svc.refresh_url(old) == "fresh://pdfs/demand_letter_abc.pdf"
+    signed = "https://acct.blob.core.windows.net/signed-agreements/settlement_abc.pdf?sig=x"
+    assert svc.refresh_url(signed) == "fresh://signed/settlement_abc.pdf"
+    nested = "https://acct.blob.core.windows.net/evidence-uploads/case1/abc_photo%201.jpg?sig=x"
+    assert svc.refresh_url(nested) == "fresh://evidence/case1/abc_photo 1.jpg"
+    # Unknown containers / shapes are returned unchanged rather than broken.
+    other = "https://example.com/some/file.pdf"
+    assert svc.refresh_url(other) == other
+    assert svc.refresh_url(None) is None

@@ -195,7 +195,7 @@ class BlobService:
         )
         return (
             f"https://{account_name}.blob.core.windows.net"
-            f"/{container}/{blob_name}?{sas_token}"
+            f"/{container}/{quote(blob_name)}?{sas_token}"
         )
 
     def blob_exists(self, container_key: str, blob_name: str) -> bool:
