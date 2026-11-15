@@ -1,3 +1,4 @@
+import inspect
 import io
 from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
 import logging
@@ -52,50 +53,35 @@ async def run_document_agent(case: dict) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    try:
-        # NON-CRIMINAL: Demand Letter
-        if track != "criminal":
-            pdf_bytes = await _generate_demand_letter(case, intake, legal, analytics)
-            blob_name = f"demand_letter_{case_id}.pdf"
+    async def build(doc_type: str, result_key: str, make, expiry_hours: int, blob_prefix: str = None):
+        # Each document is independent: one failure must not skip the rest.
+        try:
+            pdf_bytes = await make() if inspect.iscoroutinefunction(make) else make()
+            blob_name = f"{blob_prefix or doc_type}_{case_id}.pdf"
             blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["demand_letter_url"] = url
-            cosmos_service.save_document_record(case_id, "demand_letter", url)
-            logger.info(f"Demand letter generated | case_id={case_id}")
+            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=expiry_hours)
+            result[result_key] = url
+            cosmos_service.save_document_record(case_id, doc_type, url)
+            logger.info(f"{doc_type} generated | case_id={case_id}")
+        except Exception as e:
+            logger.exception(f"Document Agent failed | doc={doc_type} | case_id={case_id} | error={e}")
+            result.setdefault("errors", {})[doc_type] = str(e)
 
-        # NON-CRIMINAL monetary tracks: Court File
-        if track in ["monetary_civil", "employment", "consumer"]:
-            pdf_bytes = await _generate_court_file(case, intake, legal, analytics)
-            blob_name = f"court_file_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["court_file_url"] = url
-            cosmos_service.save_document_record(case_id, "court_file", url)
-            logger.info(f"Court file generated | case_id={case_id}")
-
-        # CRIMINAL ONLY: FIR Advisory
-        if track == "criminal":
-            pdf_bytes = await _generate_fir_advisory(case, intake, legal)
-            blob_name = f"fir_advisory_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["fir_advisory_url"] = url
-            cosmos_service.save_document_record(case_id, "fir_advisory", url)
-            logger.info(f"FIR advisory generated | case_id={case_id}")
-
-        # ALL NON-CRIMINAL: Mediation Certificate
-        if track != "criminal":
-            pdf_bytes = _generate_mediation_certificate(case)
-            blob_name = f"mediation_cert_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=720)
-            result["mediation_certificate_url"] = url
-            cosmos_service.save_document_record(case_id, "mediation_certificate", url)
-            logger.info(f"Mediation certificate generated | case_id={case_id}")
-
-    except Exception as e:
-        logger.error(f"Document Agent failed | case_id={case_id} | error={e}")
-        result["error"] = str(e)
+    if track != "criminal":
+        async def demand():
+            return await _generate_demand_letter(case, intake, legal, analytics)
+        await build("demand_letter", "demand_letter_url", demand, 168)
+    if track in ["monetary_civil", "employment", "consumer"]:
+        async def court():
+            return await _generate_court_file(case, intake, legal, analytics)
+        await build("court_file", "court_file_url", court, 168)
+    if track == "criminal":
+        async def fir():
+            return await _generate_fir_advisory(case, intake, legal)
+        await build("fir_advisory", "fir_advisory_url", fir, 168)
+    if track != "criminal":
+        await build("mediation_certificate", "mediation_certificate_url",
+                    lambda: _generate_mediation_certificate(case), 720, blob_prefix="mediation_cert")
 
     return result
 

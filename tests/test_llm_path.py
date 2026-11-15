@@ -213,3 +213,18 @@ def test_fir_advisory_survives_wrongly_typed_llm_content(client, login, fake_llm
     assert docs["fir_advisory_url"], docs
     errors = [rec.getMessage()[:160] for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert not errors, errors
+
+
+def test_one_failing_document_does_not_block_the_others(client, login, monkeypatch):
+    import app.agents.document_agent as da
+    from app.services.cosmos_service import cosmos_service
+
+    async def boom(*a, **k):
+        raise RuntimeError("demand letter renderer down")
+    monkeypatch.setattr(da, "_generate_demand_letter", boom)
+    headers = login("isolate@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="isolate@example.com", respondent_email="isolate-r@example.com"))
+    docs = cosmos_service.get_case(r.json()["case_id"])["documents_data"]
+    assert docs["demand_letter_url"] is None and "demand_letter" in docs["errors"]
+    assert docs["court_file_url"] and docs["mediation_certificate_url"]
