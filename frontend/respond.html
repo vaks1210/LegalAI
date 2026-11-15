@@ -248,7 +248,20 @@ window.onload = async () => {
     showScreen('screenVerify');
     return;
   }
-  // Try to auto-load — will fail without email, show verify screen
+  // The emailed link carries a signed token that identifies the respondent,
+  // so open the case directly; fall back to the email form otherwise.
+  if (respondentToken) {
+    try {
+      const r = await axios.get(
+        `${API}/api/respondent/case/${caseId}?t=${encodeURIComponent(respondentToken)}`
+      );
+      caseData        = r.data;
+      respondentEmail = (r.data.case && r.data.case.respondent_email) || '';
+      renderCase();
+      showScreen('screenCase');
+      return;
+    } catch (_) { /* fall through to manual verification */ }
+  }
   showScreen('screenVerify');
 };
 

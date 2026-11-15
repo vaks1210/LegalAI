@@ -81,7 +81,9 @@ def _verify_respondent(case_id: str, email: str, token: str | None) -> dict:
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["respondent_email"].lower() != (email or "").strip().lower():
+    # The signed token is bound to the respondent's email, so it alone proves
+    # identity; an email, if supplied, must still match.
+    if email and case["respondent_email"].lower() != email.strip().lower():
         raise HTTPException(status_code=403, detail="Email does not match case records.")
     if not verify_respondent_token(case_id, case["respondent_email"], token):
         raise HTTPException(status_code=403, detail=INVALID_LINK)
@@ -93,7 +95,7 @@ def _verify_respondent(case_id: str, email: str, token: str | None) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/case/{case_id}")
-async def get_respondent_case(case_id: str, email: str, t: str = ""):
+async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
     """
     Filtered case view for respondent — analytics/ZOPA always hidden.
 

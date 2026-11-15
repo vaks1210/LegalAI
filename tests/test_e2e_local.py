@@ -209,3 +209,19 @@ def test_resend_invite_issues_working_link(client, login):
     r = client.get(f"/api/respondent/case/{case_id}",
                    params={"email": "slow-reader@example.com", "t": token})
     assert r.status_code == 200
+
+
+def test_respondent_link_token_alone_opens_case_but_wrong_email_is_refused(client, login):
+    from urllib.parse import parse_qs, urlparse
+    headers = login("direct@example.com")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="direct@example.com", respondent_email="direct-resp@example.com",
+    ))
+    case_id = r.json()["case_id"]
+    client.post(f"/api/cases/{case_id}/send-invite", headers=headers)
+    mails = client.get("/api/dev/outbox", params={"email": "direct-resp@example.com"}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+
+    assert client.get(f"/api/respondent/case/{case_id}", params={"t": token}).status_code == 200
+    r = client.get(f"/api/respondent/case/{case_id}", params={"t": token, "email": "someone@else.com"})
+    assert r.status_code == 403
