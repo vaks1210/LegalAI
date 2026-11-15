@@ -194,7 +194,16 @@ async def _run_full_pipeline(case_id: str):
 
 @router.get("/my-cases")
 async def get_my_cases(current_user: dict = Depends(get_current_user)):
-    cases = [refresh_case_urls(c) for c in cosmos_service.get_cases_by_email(current_user["email"])]
+    email = current_user["email"].lower()
+    cases = []
+    for c in cosmos_service.get_cases_by_email(email):
+        if (c.get("claimant_email") or "").lower() == email:
+            cases.append(refresh_case_urls(c))
+        else:
+            # The user is the respondent: never return the claimant's private analysis.
+            view = cosmos_service.get_case_for_respondent(c["id"])
+            if view:
+                cases.append({**view, "role": "respondent"})
     return {"cases": cases, "total": len(cases)}
 
 

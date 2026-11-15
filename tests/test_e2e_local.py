@@ -262,3 +262,16 @@ def test_respondent_account_cannot_fetch_claimant_only_documents(client, login):
     docs = client.get(f"/api/documents/{case_id}/all", headers=respondent).json()["documents"]
     assert "court_file" not in docs and docs["demand_letter"]
     assert client.get(f"/api/documents/{case_id}/court-file", headers=claimant).status_code == 200
+
+
+def test_my_cases_gives_respondent_only_the_filtered_view(client, login):
+    claimant = login("list-owner@example.com")
+    client.post("/api/cases/submit", headers=claimant, json=_submission(
+        claimant_email="list-owner@example.com", respondent_email="list-resp@example.com",
+    ))
+    respondent = login("list-resp@example.com")
+    cases = client.get("/api/cases/my-cases", headers=respondent).json()["cases"]
+    assert cases and all(c.get("role") == "respondent" for c in cases)
+    assert all("analytics_data" not in c and "strategy_data" not in c for c in cases)
+    own = client.get("/api/cases/my-cases", headers=claimant).json()["cases"]
+    assert own[0]["analytics_data"]
