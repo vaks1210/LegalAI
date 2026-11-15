@@ -210,7 +210,8 @@ async def get_case_status(case_id: str):
         "status":              case["status"],
         "track":               case.get("track"),
         "current_round":       case.get("current_round", 0),
-        "pipeline_error":      case.get("pipeline_error"),
+        # Public endpoint: report *that* analysis failed, never the internal error text.
+        "pipeline_error":      "Analysis failed — please contact support." if case.get("pipeline_error") else None,
         "allowed_transitions": get_allowed_transitions(case),
         "is_expired":          is_expired(case),
     }
@@ -485,8 +486,9 @@ async def get_mediation_certificate(case_id: str, current_user: dict = Depends(g
             cosmos_service.update_case(case_id, {
                 "documents_data": {**docs_data, "mediation_certificate_url": url}
             })
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to generate certificate: {e}")
+        except Exception:
+            logger.exception(f"Mediation certificate generation failed | case_id={case_id}")
+            raise HTTPException(status_code=500, detail="Failed to generate certificate. Please try again.")
 
     return {
         "download_url": url,
