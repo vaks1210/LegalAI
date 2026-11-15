@@ -133,3 +133,15 @@ def test_rate_limit_cannot_be_bypassed_by_spoofing_forwarded_for():
         for i in range(4)
     ]
     assert codes == [200, 200, 429, 429]
+
+
+def test_otp_requests_are_throttled_per_email_even_across_ips(client):
+    email = "throttle@example.com"
+    codes = [
+        client.post("/api/auth/request-otp", json={"email": email},
+                    headers={"X-Forwarded-For": f"198.51.100.{i}"}).status_code
+        for i in range(7)
+    ]
+    assert codes[:5] == [200] * 5 and codes[5:] == [429, 429]
+    # A different email is unaffected.
+    assert client.post("/api/auth/request-otp", json={"email": "other-throttle@example.com"}).status_code == 200

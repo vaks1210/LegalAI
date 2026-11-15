@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from azure.core import MatchConditions
 from azure.cosmos import CosmosClient, exceptions
@@ -282,6 +282,37 @@ class CosmosService:
             "created_at": self._now(),
         }
         self.users.upsert_item(body=doc)
+
+    def allow_otp_request(self, email: str, max_requests: int = 5, window_seconds: int = 3600) -> bool:
+        """
+        Per-email OTP throttle (independent of IP, so rotating IPs doesn't
+        help). Stored apart from the OTP itself so that deleting a code —
+        on success or lockout — doesn't reset the history. No "email" field
+        on purpose: user lookups match on it.
+        """
+        doc_id = f"otpreq_{email.replace('@','_').replace('.','_')}"
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=window_seconds)).isoformat()
+        allowed = {"ok": True}
+
+        def apply(doc):
+            recent = [t for t in doc.get("requests", []) if t > cutoff]
+            if len(recent) >= max_requests:
+                allowed["ok"] = False
+            else:
+                recent.append(now.isoformat())
+            doc["requests"] = recent
+
+        try:
+            self._mutate(self.users, doc_id, apply)
+        except NOT_FOUND:
+            try:
+                self.users.create_item(body={"id": doc_id, "doc_kind": "otp_requests",
+                                             "requests": [now.isoformat()]})
+            except Exception:
+                # Created concurrently by another request — count this one too.
+                self._mutate(self.users, doc_id, apply)
+        return allowed["ok"]
 
     def get_otp(self, email: str) -> Optional[dict]:
         otp_id = f"otp_{email.replace('@','_').replace('.','_')}"

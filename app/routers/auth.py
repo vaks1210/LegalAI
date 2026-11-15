@@ -56,6 +56,11 @@ async def request_otp(body: OTPRequest):
     email      = body.email.strip().lower()
     if "@" not in email or "." not in email.split("@")[-1] or len(email) > 254:
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+    if not cosmos_service.allow_otp_request(email):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login codes requested for this email. Please try again in an hour.",
+        )
     otp        = generate_otp()
     expires_at = get_otp_expiry()
 
