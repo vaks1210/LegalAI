@@ -1,5 +1,5 @@
 """
-The Cosmos branch of CosmosService._mutate (ETag + IfNotModified + retry)
+Cloud-backend code paths (Cosmos ETag retry, Azure Blob re-signing, SendGrid)
 can't run against a real account here, so exercise it with a fake
 container that enforces ETags the way the SDK does.
 """
@@ -112,3 +112,29 @@ def test_azure_blob_urls_are_re_signed_for_the_right_file(monkeypatch):
     other = "https://example.com/some/file.pdf"
     assert svc.refresh_url(other) == other
     assert svc.refresh_url(None) is None
+
+
+def test_sendgrid_request_and_failure_handling(monkeypatch):
+    import httpx
+    from app.services.email_service import EmailService
+    svc = EmailService()
+    svc.api_key, svc.sender = "SG.test", "noreply@example.com"
+    sent = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, headers=None, json=None):
+            sent.update(url=url, headers=headers, json=json)
+            return httpx.Response(sent.get("status", 202))
+
+    monkeypatch.setattr("app.services.email_service.httpx.Client", FakeClient)
+    assert svc.send_otp("user@example.com", "123456", "Asha") is True
+    assert sent["url"].endswith("/v3/mail/send")
+    assert sent["headers"]["Authorization"] == "Bearer SG.test"
+    assert sent["json"]["personalizations"][0]["to"][0]["email"] == "user@example.com"
+    assert "123456" in sent["json"]["content"][0]["value"]
+
+    sent["status"] = 401
+    assert svc.send_otp("user@example.com", "123456") is False   # reported, not raised
