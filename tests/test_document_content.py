@@ -84,3 +84,12 @@ def test_breach_notice_and_certificate_use_the_real_dates():
     cert = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(_generate_mediation_certificate(case))).pages)
     assert "01 October 2026" in breach
     assert "03 September 2026" in cert
+
+
+def test_law_references_read_naturally():
+    from app.agents.document_agent import _law_ref
+    assert _law_ref({"act": "Indian Contract Act, 1872", "section": "Section 73"}) == "Indian Contract Act, 1872 — Section 73"
+    assert _law_ref({"act": "NI Act", "section": "138"}) == "NI Act — Section 138"
+    assert _law_ref({"act": "Rent Act", "section": "Deposit / refund provisions"}) == "Rent Act — Deposit / refund provisions"
+    assert _law_ref({"act": "CPC", "section": "Order XXXVII"}) == "CPC — Order XXXVII"
+    assert _law_ref({"act": "Tort law", "section": ""}) == "Tort law"

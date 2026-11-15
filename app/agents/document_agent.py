@@ -187,6 +187,24 @@ def _fmt_date(iso: str | None) -> str:
     return _today()
 
 
+def _short(text, limit: int = 160) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "..."
+
+
+def _law_ref(law: dict) -> str:
+    """'Act — Section 73' without doubling 'Section' or labelling descriptions as sections."""
+    act = law.get("act") or "Applicable law"
+    sec = str(law.get("section") or "").strip()
+    if not sec or sec.upper() == "N/A":
+        return act
+    if sec.lower().startswith(("section", "sections", "s.", "order", "rule", "chapter")) or not sec[0].isdigit():
+        return f"{act} — {sec}"
+    return f"{act} — Section {sec}"
+
+
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%d %B %Y")
 
@@ -517,8 +535,8 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
             if not isinstance(law, dict):
                 law = {"act": str(law)}
             story.append(_bullet(
-                f"{law.get('act')} — Section {law.get('section')}: "
-                f"{(law.get('relevance') or '')[:80]}"
+                f"{_law_ref(law)}: "
+                f"{_short(law.get('relevance'))}"
             ))
 
     _append_case_record_sections(story, case, intake, legal, analytics, shared=True)  # sent to the respondent
@@ -749,8 +767,8 @@ Relief available: {legal.get('relief_available', [])}
             if not isinstance(law, dict):
                 law = {"act": str(law)}
             story.append(_bullet(
-                f"{law.get('act')} — Section {law.get('section','N/A')} "
-                f"[{law.get('strength','SUPPORTING')}]: {(law.get('relevance') or '')[:80]}"
+                f"{_law_ref(law)} "
+                f"[{law.get('strength','SUPPORTING')}]: {_short(law.get('relevance'))}"
             ))
 
     _append_case_record_sections(story, case, intake, legal, analytics)
@@ -1129,7 +1147,7 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
             if isinstance(sec, dict):
                 story.append(_bullet(
                     f"{sec.get('section','')}: {sec.get('title','')} — "
-                    f"{(sec.get('explanation') or '')[:100]}"
+                    f"{_short(sec.get('explanation'))}"
                 ))
             else:
                 story.append(_bullet(str(sec)))
