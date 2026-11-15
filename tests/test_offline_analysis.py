@@ -46,3 +46,43 @@ def test_consumer_forum_follows_claim_amount():
     case = {"dispute_text": "x", "claim_amount": 30_000_000, "claimant_city": None}
     legal = oa.legal(case, "consumer", {"dispute_category": "consumer_general"})
     assert "National" in legal["forum_name"]
+
+
+from app.agents.negotiation_agent import _fallback_proposal, _post_process
+
+ANALYTICS = {"zopa_min": 31500, "zopa_max": 50400, "zopa_optimal": 42000}
+CASE = {"track": "monetary_civil", "claim_amount": 60000}
+
+
+def test_offline_proposal_stays_between_offers():
+    for rnd, cl, rs in [(1, 55000, 35000), (2, 50000, 38000), (3, 46000, 42000), (1, 30000, 25000)]:
+        amount = _fallback_proposal(CASE, rnd, cl, rs, ANALYTICS)["proposed_amount"]
+        assert rs <= amount <= cl, (rnd, cl, rs, amount)
+
+
+def test_offline_proposal_follows_party_movement():
+    low = _fallback_proposal(CASE, 3, 40000, 34000, ANALYTICS)["proposed_amount"]
+    high = _fallback_proposal(CASE, 3, 50000, 46000, ANALYTICS)["proposed_amount"]
+    assert low < high
+
+
+def test_llm_proposal_above_claimant_ask_is_clamped():
+    result = _post_process(
+        {"proposed_amount": 48000, "reasoning": "x" * 100}, CASE, ANALYTICS, 1,
+        "monetary_civil", {}, claimant_offer=40000, respondent_offer=30000,
+    )
+    assert result["proposed_amount"] == 40000
+
+
+def test_offline_non_monetary_proposes_actions():
+    p = _fallback_proposal({"track": "non_monetary"}, 1,
+                           ["Public apology", "Remove post"], ["Remove post"], {})
+    assert "Remove post" in p["proposed_actions"]
+    assert "Public apology" in p["proposed_actions"]
+    assert "unavailable" not in p["reasoning"].lower()
+
+
+def test_defamation_without_money_is_non_monetary():
+    r = oa.route("My colleague posted false allegations about me online damaging my reputation. "
+                 "I want the post removed and a public apology.", None, "individual", "Delhi")
+    assert r["track"] == "non_monetary"

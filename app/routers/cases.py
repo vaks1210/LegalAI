@@ -531,7 +531,7 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
             events.append({"timestamp": r["proposal_issued_at"], "event": f"ROUND_{rn}_PROPOSAL", "label": f"Round {rn}: AI proposal — Rs. {amt:,.0f}"})
 
     if case["status"] == "SETTLED":
-        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — Rs. {case.get('settled_amount', 0):,.0f}"})
+        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — Rs. {(case.get('settled_amount') or 0):,.0f}"})
     elif case["status"] in ("ESCALATED", "AUTO_ESCALATED"):
         events.append({"timestamp": case.get("escalated_at") or case["updated_at"], "event": "ESCALATED", "label": "Escalated — court file generated"})
 

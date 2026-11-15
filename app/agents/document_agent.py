@@ -413,7 +413,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
             "subject_line": "Re: Legal Notice",
             "paragraph_1":  case["dispute_text"][:400],
             "paragraph_2":  "The respondent's actions are in violation of applicable Indian law.",
-            "paragraph_3":  f"You are hereby demanded to pay Rs. {case.get('claim_amount', 0):,.0f} within 15 days.",
+            "paragraph_3":  f"You are hereby demanded to pay Rs. {(case.get('claim_amount') or 0):,.0f} within 15 days.",
             "paragraph_4":  "Failure to comply within 15 days will compel the claimant to initiate legal proceedings.",
             "paragraph_5":  "All rights are expressly reserved.",
         }
@@ -525,7 +525,7 @@ Case: {case['dispute_text'][:600]}
 Claimant: {case['claimant_name']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Track: {case.get('track')}
-Claim: Rs. {case.get('claim_amount', 0):,.0f}
+Claim: Rs. {(case.get('claim_amount') or 0):,.0f}
 Legal standing: {legal.get('legal_standing')}
 Forum: {legal.get('forum_name')}
 Applicable laws: {[l.get('act') + ' S.' + str(l.get('section','')) for l in legal.get('applicable_laws',[])[:5]]}
@@ -550,7 +550,7 @@ Relief available: {legal.get('relief_available', [])}
             "witness_list":         [{"role": "Claimant", "relevance": "Primary witness"}],
             "pre_filing_actions":   ["Collect all evidence", "Send legal notice"],
             "filing_steps":         ["File plaint at appropriate court"],
-            "prayer_for_relief":    [f"Payment of Rs. {case.get('claim_amount', 0):,.0f}"],
+            "prayer_for_relief":    [f"Payment of Rs. {(case.get('claim_amount') or 0):,.0f}"],
             "urgent_interim_relief": False,
             "interim_relief_grounds": None,
         }
@@ -596,7 +596,7 @@ Relief available: {legal.get('relief_available', [])}
         ["Win Probability", f"{analytics.get('win_probability', 'N/A')}%"],
         ["Legal Standing",  legal.get("legal_standing", "N/A")],
         ["Forum",           legal.get("forum_name", "N/A")],
-        ["Court Cost Est.", f"Rs. {analytics.get('court_cost_estimate', 0):,.0f}"],
+        ["Court Cost Est.", f"Rs. {(analytics.get('court_cost_estimate') or 0):,.0f}"],
         ["Time Estimate",   f"{analytics.get('time_to_resolution_months', 'N/A')} months"],
     ]
     snap_tbl = Table(snap_data, colWidths=[60*mm, 110*mm])
@@ -765,7 +765,7 @@ async def _generate_settlement_pdf(
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute type: {intake.get('dispute_category', case.get('track'))}
-Original claim: Rs. {case.get('claim_amount', 0):,.0f}
+Original claim: Rs. {(case.get('claim_amount') or 0):,.0f}
 Agreed settlement amount: Rs. {settled_amount:,.0f}
 Governing state: {case['claimant_state']}
 Settlement date: {_today()}
@@ -1101,7 +1101,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
     details = [
         ["Case Reference",  case["id"][:8].upper()],
         ["Case Track",      case.get("track", "N/A").replace("_", " ").title()],
-        ["Claim Amount",    f"Rs. {case.get('claim_amount', 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
+        ["Claim Amount",    f"Rs. {(case.get('claim_amount') or 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
         ["Claimant",        case["claimant_name"]],
         ["Respondent",      case["respondent_name"]],
         ["Date Initiated",  _today()],
@@ -1171,7 +1171,7 @@ async def _generate_breach_notice_pdf(case: dict) -> bytes:
 
     story.append(_body_para(
         f"Under the terms of the executed Settlement Agreement, you agreed to pay "
-        f"a sum of Rs. {case.get('settled_amount', 0):,.0f} to "
+        f"a sum of Rs. {(case.get('settled_amount') or 0):,.0f} to "
         f"{case['claimant_name']} (Claimant) within the stipulated payment period. "
         f"As of {_today()}, the said payment has not been received by the Claimant."
     ))
@@ -1186,7 +1186,7 @@ async def _generate_breach_notice_pdf(case: dict) -> bytes:
 
     story.append(_body_para(
         f"You are hereby called upon to make payment of Rs. "
-        f"{case.get('settled_amount', 0):,.0f} within 7 days of receipt of this "
+        f"{(case.get('settled_amount') or 0):,.0f} within 7 days of receipt of this "
         "notice. Failure to comply will leave the Claimant with no alternative but "
         "to initiate legal proceedings for enforcement of the Settlement Agreement, "
         "which will be submitted to the appropriate court as binding evidence of "

@@ -243,6 +243,10 @@ def route(dispute_text: str, claim_amount, respondent_type: str, claimant_state:
     if criminal:
         track = "criminal"
     amount = claim_amount or extract_amount(dispute_text)
+    # Reputation / general disputes with no money claimed are about actions
+    # (apology, removal, stopping conduct), so mediate them as non-monetary.
+    if track == "monetary_civil" and not amount and category in ("defamation", "other"):
+        track = "non_monetary"
     return {
         "track":                  track,
         "confidence":             0.6 if category != "other" else 0.35,

@@ -267,3 +267,74 @@ def test_payment_confirmation_rejected_before_settlement(client, login):
     case_id, headers, *_ = _invited_case(client, login)
     r = client.post(f"/api/cases/{case_id}/confirm-payment", params={"honored": True}, headers=headers)
     assert r.status_code == 409
+
+
+def test_non_monetary_dispute_settles_on_actions(client, login):
+    n = next(_counter)
+    cl_email, rs_email = f"nm-cl{n}@paths.test", f"nm-rs{n}@paths.test"
+    headers = login(cl_email)
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email=cl_email, respondent_email=rs_email, claim_amount=None,
+        dispute_text=("My former colleague posted false allegations about me on LinkedIn that are "
+                      "damaging my reputation with clients. I want the post removed and a public apology."),
+    ))
+    assert r.status_code == 200, r.text
+    case_id = r.json()["case_id"]
+    assert r.json()["track"] == "non_monetary"
+    assert client.post(f"/api/cases/{case_id}/send-invite", headers=headers).status_code == 200
+    mails = client.get("/api/dev/outbox", params={"email": rs_email}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+
+    r = client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "demands": ["Remove the post", "Public apology"],
+    })
+    assert r.status_code == 200, r.text
+    r = client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1,
+        "commitments": ["Remove the post"],
+    })
+    assert r.status_code == 200, r.text
+    assert _status(client, case_id) == "PROPOSAL_ISSUED"
+
+    neg = client.get(f"/api/negotiation/status/{case_id}", headers=headers).json()
+    actions = neg["current_round_detail"]["proposed_actions"]
+    assert "Remove the post" in actions and "Public apology" in actions
+
+    client.post("/api/negotiation/proposal-response", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant",
+    })
+    r = client.post("/api/respondent/proposal-response", json={
+        "case_id": case_id, "email": rs_email, "token": token, "decision": "ACCEPT",
+    })
+    assert r.json()["outcome"] == "SETTLED", r.text
+    assert _status(client, case_id) == "SETTLED"
+    assert client.get(f"/api/documents/{case_id}/settlement", headers=headers).status_code == 200
+
+
+def test_non_monetary_case_has_no_agent_errors_anywhere(client, login):
+    from app.services.cosmos_service import cosmos_service
+    n = next(_counter)
+    cl_email, rs_email = f"nm2-cl{n}@paths.test", f"nm2-rs{n}@paths.test"
+    headers = login(cl_email)
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email=cl_email, respondent_email=rs_email, claim_amount=None,
+        dispute_text=("My neighbour plays loud music past midnight every night and keeps blocking "
+                      "my parking spot. I want the noise to stop and the parking kept clear."),
+    ))
+    case_id = r.json()["case_id"]
+    case = cosmos_service.get_case(case_id)
+    errors = {k: v for k, v in case.items() if k.endswith("_error")}
+    assert not errors, errors
+    assert case["documents_data"].get("demand_letter_url")
+
+    assert client.post(f"/api/cases/{case_id}/strategy", headers=headers).status_code == 200
+    assert client.get(f"/api/cases/{case_id}/timeline", headers=headers).status_code == 200
+    assert client.get(f"/api/cases/{case_id}/mediation-certificate", headers=headers).status_code == 200
+
+    assert client.post(f"/api/cases/{case_id}/send-invite", headers=headers).status_code == 200
+    mails = client.get("/api/dev/outbox", params={"email": rs_email}).json()["emails"]
+    token = parse_qs(urlparse(next(l for e in mails for l in e["links"] if "/respond/" in l)).query)["t"][0]
+    r = client.post("/api/respondent/decline", json={"case_id": case_id, "email": rs_email, "token": token})
+    assert r.status_code == 200, r.text
+    case = cosmos_service.get_case(case_id)
+    assert not {k: v for k, v in case.items() if k.endswith("_error")}

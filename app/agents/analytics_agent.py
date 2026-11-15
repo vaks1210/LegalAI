@@ -412,7 +412,7 @@ DISPUTE OVERVIEW:
 PARTIES:
 - Claimant: {case['claimant_name']} | {case['claimant_state']}
 - Respondent: {case['respondent_name']} ({case.get('respondent_type', 'individual')})
-- Stated claim amount: Rs. {case.get('claim_amount', 0):,.0f}
+- Stated claim amount: Rs. {(case.get('claim_amount') or 0):,.0f}
 - Track: {track}
 
 INTAKE ANALYSIS:
@@ -499,7 +499,7 @@ def _build_context(case: dict, intake: dict, legal: dict, track: str) -> dict:
         entitlements = legal.get("statutory_entitlements", {})
         for k, v in entitlements.items():
             if isinstance(v, dict) and v.get("amount", 0) > 0:
-                legal_lines.append(f"  → {k}: Rs. {v['amount']:,.0f} ({v.get('basis', '')})")
+                legal_lines.append(f"  → {k}: Rs. {(v.get('amount') or 0):,.0f} ({v.get('basis', '')})")
 
     claim_amount = case.get("claim_amount", 0) or 0
     quant_lines = [
@@ -510,7 +510,7 @@ def _build_context(case: dict, intake: dict, legal: dict, track: str) -> dict:
     ]
     if track == "employment":
         quant_lines.append(
-            f"- Statutory dues floor for ZOPA: Rs. {legal.get('total_statutory_dues', 0):,.0f}"
+            f"- Statutory dues floor for ZOPA: Rs. {(legal.get('total_statutory_dues') or 0):,.0f}"
         )
     if track == "consumer":
         from app.core.legal_reference import get_consumer_forum_tier

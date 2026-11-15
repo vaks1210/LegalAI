@@ -123,7 +123,7 @@ ANALYTICS:
 - ZOPA floor (minimum to accept): Rs. {zopa_min:,.0f}
 - ZOPA optimal (fair settlement): Rs. {zopa_opt:,.0f}
 - ZOPA ceiling (maximum likely): Rs. {zopa_max:,.0f}
-- Court cost estimate: Rs. {analytics.get('court_cost_estimate', 0):,.0f}
+- Court cost estimate: Rs. {(analytics.get('court_cost_estimate') or 0):,.0f}
 - Time to court judgment: {analytics.get('time_to_resolution_months', 'N/A')} months
 - Payment recovery probability: {analytics.get('payment_recovery_probability', 'N/A')}%{statutory_floor}
 
@@ -195,7 +195,7 @@ def _fallback_strategy(case: dict, intake: dict, legal: dict, analytics: dict) -
         "what_to_say": [
             "Open by stating the specific amount owed and the date it became due — be precise.",
             f"Reference your key document (e.g. contract, payslip, order confirmation) as the legal anchor.",
-            f"Mention that going to court would cost approximately Rs. {analytics.get('court_cost_estimate', 75000):,.0f} and take {analytics.get('time_to_resolution_months', 30)} months — the respondent faces the same cost.",
+            f"Mention that going to court would cost approximately Rs. {(analytics.get('court_cost_estimate') or 75000):,.0f} and take {analytics.get('time_to_resolution_months', 30)} months — the respondent faces the same cost.",
             "Close by proposing a specific amount and a specific payment timeline.",
         ],
         "what_not_to_say": [
@@ -219,7 +219,7 @@ def _fallback_strategy(case: dict, intake: dict, legal: dict, analytics: dict) -
             "Legal interest at 18% per annum accrues from the default date.",
         ],
         "when_to_use_pressure": "If respondent offers less than 50% of claim by round 2, escalate tone and reference court consequences explicitly.",
-        "best_settlement_range": f"Floor: Rs. {zopa_min:,.0f} | Target: Rs. {analytics.get('zopa_optimal', claim):,.0f}",
+        "best_settlement_range": f"Floor: Rs. {zopa_min:,.0f} | Target: Rs. {(analytics.get('zopa_optimal') or claim):,.0f}",
         "opening_ask_recommendation": f"Open at your full claim of Rs. {claim:,.0f} in round 1 to anchor the negotiation.",
         "court_backup_plan": [
             f"Send formal legal notice by registered post to {case.get('respondent_name')} within 7 days of failed mediation.",
