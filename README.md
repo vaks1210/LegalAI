@@ -488,9 +488,10 @@ curl https://legalai-resolver.azurewebsites.net/health
 
 - Legal accuracy is AI-generated — not verified by a licensed advocate
 - Settlement agreements are AI-drafted — should be reviewed by a lawyer before use in court
-- In-memory rate limiter — for multi-worker production, replace with Redis
-- PDFs lost on server restart if not using Blob Storage (ephemeral on free hosting tiers)
+- Single-instance design: the rate limiter is in memory and the deadline worker runs in-process — run one instance (`--workers 1`), or move both to shared infrastructure (e.g. Redis + a scheduled job) before scaling out
+- Local mode stores the database and PDFs on disk (`LOCAL_DATA_DIR`) — mount persistent storage, or configure Cosmos DB / Blob Storage, for anything beyond a demo
 - Offline (no-LLM) mode gives a rule-based baseline only — configure an LLM for case-specific reasoning
+- No self-service data export/erasure yet (DPDP data-principal rights) — retention policy for cases involving another party needs a product/legal decision
 
 ---
 
