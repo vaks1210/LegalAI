@@ -22,7 +22,7 @@ STAGE_DEADLINES = {
     CaseStatus.PROOF_RESPONSE_PENDING: 3 * 24,
     CaseStatus.PROPOSAL_ISSUED: 2 * 24,
     CaseStatus.SETTLEMENT_PENDING_CONFIRMATION: 2 * 24,
-    CaseStatus.SETTLING: 14 * 24,
+    CaseStatus.SETTLING: 1,  # transient: resume an interrupted settlement
     CaseStatus.ANALYZED: 14 * 24,
 }
 

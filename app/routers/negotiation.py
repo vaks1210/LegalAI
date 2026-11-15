@@ -638,11 +638,12 @@ async def _handle_settlement(case_id: str):
         else:
             settled_amount = case.get("claim_amount") or 0
 
-        cosmos_service.transition_case(
-            case_id,
-            CaseStatus.SETTLING,
-            {"settled_amount": settled_amount, "action_required_by": None},
-        )
+        if case["status"] != CaseStatus.SETTLING.value:  # already SETTLING when resuming
+            cosmos_service.transition_case(
+                case_id,
+                CaseStatus.SETTLING,
+                {"settled_amount": settled_amount, "action_required_by": None},
+            )
 
         # Both parties agreed — the case is settled even if the PDF fails to
         # render. Previously a PDF failure left it in SETTLING, which the

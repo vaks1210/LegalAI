@@ -470,3 +470,23 @@ def test_interrupted_mediation_is_resumed_by_worker(client, login, monkeypatch):
     _expire_now(case_id)
     _run_expiry()
     assert _status(client, case_id) == "PROPOSAL_ISSUED"
+
+
+def test_interrupted_settlement_is_completed_not_treated_as_breach(client, login, monkeypatch):
+    import app.routers.negotiation as neg_router
+    from app.services.cosmos_service import cosmos_service
+    from app.models.case import CaseStatus
+    case_id, headers, resp_email, token = _invited_case(client, login)
+
+    async def interrupted(cid):  # dies right after entering SETTLING
+        cosmos_service.transition_case(cid, CaseStatus.SETTLING, {"settled_amount": 60000})
+    monkeypatch.setattr(neg_router, "_handle_settlement", interrupted)
+    client.post("/api/respondent/accept-in-full", json={"case_id": case_id, "email": resp_email, "token": token})
+    assert _status(client, case_id) == "SETTLING"
+    monkeypatch.undo()
+
+    _expire_now(case_id)
+    _run_expiry()
+    case = cosmos_service.get_case(case_id)
+    assert case["status"] == "SETTLED"
+    assert case.get("settlement_url") and not case.get("breach_notice_url")

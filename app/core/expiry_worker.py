@@ -59,7 +59,11 @@ async def _handle_expired_case(case: dict):
             await _expire_proposal_issued(case_id, case)
 
         elif status == CaseStatus.SETTLING.value:
-            await _expire_settling(case_id, case)
+            # SETTLING is a transient step inside the settlement handler; if
+            # it expires the handler was interrupted — finish the settlement.
+            # (It previously issued a payment-breach notice here.)
+            from app.routers.negotiation import _handle_settlement
+            await _handle_settlement(case_id)
 
         elif status == CaseStatus.ANALYZING.value:
             await _resume_analysis(case_id, case)
@@ -262,56 +266,6 @@ async def _expire_proposal_issued(case_id: str, case: dict):
     else:
         from app.routers.negotiation import _start_next_round
         await _start_next_round(case_id, round_number + 1)
-
-
-async def _expire_settling(case_id: str, case: dict):
-    """
-    SETTLING expired (14 days) — payment deadline passed.
-    Auto-generate breach notice and notify claimant.
-    """
-    settled_amount = case.get("settled_amount", 0) or 0
-
-    cosmos_service.update_case(case_id, {
-        "settlement_honored":   False,
-        "payment_overdue":      True,
-        "payment_overdue_at":   datetime.now(timezone.utc).isoformat(),
-    })
-
-    # Generate breach notice
-    from app.agents.document_agent import generate_breach_notice
-    try:
-        breach_url = await generate_breach_notice(case)
-        cosmos_service.update_case(case_id, {
-            "breach_notice_sent": True,
-            "breach_notice_url":  breach_url,
-        })
-    except Exception as e:
-        logger.error(f"Auto breach notice failed | case_id={case_id} | error={e}")
-        breach_url = None
-
-    from app.services.email_service import email_service
-    email_service.send(
-        to_email=case["claimant_email"],
-        subject=f"Payment Deadline Passed — Breach Notice Ready — #{case_id[:8].upper()}",
-        html_body=f"""
-        <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
-            <h3 style="color:#DC2626;">Payment Deadline Passed</h3>
-            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
-            <p style="color:#E2E8F0;">
-                The payment deadline of 14 days has passed.
-                <b>{html.escape(case['respondent_name'])}</b> has not made the agreed payment
-                of <b>Rs. {settled_amount:,.0f}</b>.
-            </p>
-            <p style="color:#E2E8F0;">
-                A Breach of Settlement Notice has been automatically generated.
-                This document is stronger than a demand letter as it references
-                the signed settlement agreement.
-            </p>
-            {'<a href="' + breach_url + '" style="display:block;background:#DC2626;color:#fff;text-align:center;padding:12px;border-radius:6px;text-decoration:none;font-weight:bold;margin-top:16px;">Download Breach Notice</a>' if breach_url else ''}
-        </div>
-        """,
-    )
-    logger.info(f"Payment deadline expired | case_id={case_id} | amount={settled_amount}")
 
 
 # ══════════════════════════════════════════════════════════════
