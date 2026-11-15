@@ -49,10 +49,6 @@ class Settings(BaseSettings):
     CONTENT_SAFETY_KEY:      str = Field(default="")
     CONTENT_SAFETY_ENDPOINT: str = Field(default="")
 
-    # ── Document Intelligence ────────────────────────────
-    DOC_INTELLIGENCE_KEY:      str = Field(default="")
-    DOC_INTELLIGENCE_ENDPOINT: str = Field(default="")
-
     # ── JWT Auth ─────────────────────────────────────────
     JWT_SECRET_KEY:      str = Field(default="changeme")
     JWT_ALGORITHM:       str = Field(default="HS256")
