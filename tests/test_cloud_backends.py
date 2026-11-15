@@ -1,7 +1,7 @@
 """
 Cloud-backend code paths (Cosmos ETag retry, Azure Blob re-signing, SendGrid)
-can't run against a real account here, so exercise it with a fake
-container that enforces ETags the way the SDK does.
+can't run against real accounts here, so they are exercised with fakes that
+behave like the SDKs (e.g. a container that enforces ETags).
 """
 import copy
 import threading
