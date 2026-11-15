@@ -1,6 +1,6 @@
 import logging
 
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,10 @@ where to open in negotiation, and what the backup court plan is.
         for field in ["what_to_say", "evidence_to_gather", "mistakes_to_avoid",
                       "court_backup_plan", "proof_gaps_to_fix_first",
                       "pressure_points", "what_not_to_say"]:
-            if not isinstance(result.get(field), list):
+            value = result.get(field)
+            if isinstance(value, str) and value.strip():
+                result[field] = [value.strip()]   # keep the model's content
+            elif not isinstance(value, list):
                 result[field] = []
 
         if not result.get("best_next_action"):
@@ -171,10 +174,7 @@ where to open in negotiation, and what the backup court plan is.
         return result
 
     except Exception as exc:
-        logger.error(
-            "Strategy agent failed | case_id=%s | error=%s",
-            case.get("id"), exc
-        )
+        log_llm_fallback(logger, "Strategy Agent", exc, case_id=case.get("id"))
         return _fallback_strategy(case, intake, legal, analytics)
 
 
