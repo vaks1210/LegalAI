@@ -15,8 +15,9 @@ from app.services.cosmos_service import CosmosService
 
 
 class FakeCosmosContainer:
-    def __init__(self):
+    def __init__(self, forced_conflicts: int = 0):
         self.docs, self.lock, self.conflicts = {}, threading.Lock(), 0
+        self.forced_conflicts = forced_conflicts  # simulate another writer racing us
 
     def create_item(self, body):
         with self.lock:
@@ -33,6 +34,9 @@ class FakeCosmosContainer:
     def replace_item(self, item, body, etag=None, match_condition=None):
         with self.lock:
             current = self.docs[item]
+            if self.forced_conflicts > 0:
+                self.forced_conflicts -= 1
+                current["_etag"] = uuid.uuid4().hex   # someone else wrote in between
             if match_condition == MatchConditions.IfNotModified and etag != current["_etag"]:
                 self.conflicts += 1
                 raise exceptions.CosmosAccessConditionFailedError(message="precondition failed")
@@ -51,6 +55,7 @@ def cosmos():
 
 
 def test_concurrent_writers_all_land_via_etag_retry(cosmos):
+    cosmos.cases = FakeCosmosContainer(forced_conflicts=5)   # guarantees the retry path runs
     cosmos.cases.create_item({"id": "c1", "n": 0})
     barrier = threading.Barrier(8)
 
@@ -62,7 +67,7 @@ def test_concurrent_writers_all_land_via_etag_retry(cosmos):
     threads = [threading.Thread(target=bump) for _ in range(8)]
     [t.start() for t in threads]; [t.join() for t in threads]
     assert cosmos.cases.read_item("c1", "c1")["n"] == 80
-    assert cosmos.cases.conflicts > 0          # the retry path really ran
+    assert cosmos.cases.conflicts >= 5         # the retry path really ran
 
 
 def test_both_party_offers_survive_on_cosmos(cosmos):
