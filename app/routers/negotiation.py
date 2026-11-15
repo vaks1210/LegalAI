@@ -8,6 +8,7 @@ from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, InvalidCaseState, UnauthorizedAccess
+from app.core.negotiation_rules import check_direct_settlement
 from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
 from app.models.negotiation import (
@@ -243,6 +244,45 @@ async def _handle_offer_submission(
 
     claimant_done   = bool(round_doc["claimant"].get("submitted_at"))
     respondent_done = bool(round_doc["respondent"].get("submitted_at"))
+
+    if claimant_done and respondent_done and case.get("track") != "non_monetary":
+        # Offers already overlap (the respondent offers at least what the
+        # claimant asks): no mediation needed — ask both to confirm. This
+        # rule existed in negotiation_rules but was never wired in.
+        direct = check_direct_settlement(case, neg, round_doc)
+        if direct:
+            amount = direct[0]
+            ask = (round_doc.get("claimant") or {}).get("amount")
+            reason = (
+                f"The respondent's offer of Rs. {amount:,.0f} meets or exceeds the claimant's ask"
+                + (f" of Rs. {ask:,.0f}" if ask is not None else "")
+                + f". Both parties are asked to confirm settlement at Rs. {amount:,.0f}."
+            )
+            cosmos_service.update_round_in_negotiation(neg["id"], round_number, {
+                "ai_proposed_amount":          amount,
+                "settlement_candidate_amount": amount,
+                "ai_reasoning":                reason,
+                "settlement_candidate_reason": reason,
+                "proposal_issued_at":          _now(),
+                "direct_settlement":           True,
+            })
+            cosmos_service.transition_case(
+                case["id"], CaseStatus.SETTLEMENT_PENDING_CONFIRMATION,
+                {"current_round": round_number, "action_required_by": None},
+            )
+            for to_email, party_name, portal in [
+                (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
+                (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
+            ]:
+                email_service.send_proposal(
+                    to_email=to_email, party_name=party_name, case_id=case["id"],
+                    round_num=round_number, proposed_amount=amount, reasoning=reason, portal_url=portal,
+                )
+            return {
+                "message":      "The offers already overlap. Both parties are asked to confirm the settlement.",
+                "status":       CaseStatus.SETTLEMENT_PENDING_CONFIRMATION.value,
+                "round_number": round_number,
+            }
 
     if claimant_done and respondent_done:
         # Both offers in — trigger AI mediation
@@ -507,6 +547,7 @@ async def proposal_response(
     # Valid states: proposal is issued, or one party is waiting after already deciding
     valid_proposal_states = {
         CaseStatus.PROPOSAL_ISSUED.value,
+        CaseStatus.SETTLEMENT_PENDING_CONFIRMATION.value,
         CaseStatus.WAITING_FOR_CLAIMANT.value,
         CaseStatus.WAITING_FOR_RESPONDENT.value,
     }

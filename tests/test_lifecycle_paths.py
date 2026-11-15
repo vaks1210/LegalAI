@@ -550,3 +550,30 @@ def test_one_sided_acceptance_times_out_instead_of_waiting_forever(client, login
     _run_expiry()
     status = client.get(f"/api/cases/{case_id}/status").json()
     assert status["status"] == "NEGOTIATION_OPEN" and status["current_round"] == 2
+
+
+def test_overlapping_offers_settle_directly_without_mediation(client, login, monkeypatch):
+    import app.routers.negotiation as neg_router
+    called = {"mediation": 0}
+
+    async def no_mediation(*a, **k):
+        called["mediation"] += 1
+    monkeypatch.setattr(neg_router, "_run_mediation", no_mediation)
+
+    case_id, headers, resp_email, token = _invited_case(client, login)
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 39000})
+    r = client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 40000})
+    assert r.json()["status"] == "SETTLEMENT_PENDING_CONFIRMATION"
+    assert called["mediation"] == 0
+
+    view = client.get(f"/api/respondent/case/{case_id}", params={"t": token}).json()["negotiation"]
+    assert view["proposal_pending"] and view["ai_proposed_amount"] == 40000
+
+    client.post("/api/respondent/proposal-response", json={"case_id": case_id, "token": token, "decision": "ACCEPT"})
+    r = client.post("/api/negotiation/proposal-response", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant"})
+    assert r.json()["outcome"] == "SETTLED"
+    from app.services.cosmos_service import cosmos_service
+    assert cosmos_service.get_case(case_id)["settled_amount"] == 40000
