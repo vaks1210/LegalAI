@@ -1,3 +1,5 @@
+import pytest
+
 from app.agents import offline_analysis as oa
 
 DEPOSIT = (
@@ -147,3 +149,15 @@ def test_to_number_parses_llm_style_values():
     assert to_number("2.5 lakh") == 250000
     assert to_number(12) == 12
     assert to_number("lots") is None and to_number(None, 7) == 7 and to_number(True) is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Ravi borrowed money from Acme under loan account RENT-1. Repayment instalments are unpaid.", "loan_default"),
+    ("The cheque given towards repayment of the loan bounced.", "cheque_bounce"),
+    ("My tenant has unpaid rent of Rs 45,000 for 3 months under the lease.", "unpaid_rent"),
+    ("Landlord refuses to return my security deposit after I vacated.", "rental_deposit"),
+    ("My employer has not paid my gratuity and provident fund after I resigned.", "pf_gratuity"),
+])
+def test_category_uses_strong_phrases_then_keyword_weight(text, expected):
+    from app.agents.offline_analysis import classify_category
+    assert classify_category(text)[0] == expected

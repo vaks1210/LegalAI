@@ -240,13 +240,34 @@ def detect_criminal_elements(text: str) -> list:
     return [label for label, pat in CRIMINAL_PATTERNS.items() if _search(pat, text)]
 
 
+# Unambiguous phrases decide the category outright, in this order.
+STRONG_RULES = [
+    ("pf_gratuity",    r"\b(gratuity|provident fund|epf)\b"),
+    ("cheque_bounce",  r"\b(cheque|check) (bounce\w*|dishonou?r\w*|return\w*)\b|\b(bounced|dishonou?red) cheque\b"
+                       r"|\bcheques?\b[^.]{0,80}\b(bounced|dishonou?red|returned unpaid)\b"),
+    ("unpaid_rent",    r"\b(unpaid rent|rent arrears|arrears of rent|rent (dues|due|outstanding))\b"),
+    ("rental_deposit", r"\b(security deposit|deposit refund|refund (of )?(the |my )?deposit|deposit (was )?not (been )?(returned|refunded))\b"),
+]
+
+
 def classify_category(text: str, respondent_type: str | None = None) -> tuple[str, str, str]:
-    for category, track, label, pattern in CATEGORY_RULES:
+    """
+    Strong phrases first; otherwise the rule with the most distinct keyword
+    hits wins (earlier rules break ties). Plain first-match misfiled e.g. a
+    loan with reference "RENT-1" as a deposit dispute.
+    """
+    rules = {c: (c, t, label) for c, t, label, _ in CATEGORY_RULES}
+    for category, pattern in STRONG_RULES:
         if _search(pattern, text):
-            if track == "consumer" and respondent_type == "individual" and category == "consumer_general":
-                continue
-            return category, track, label
-    return "other", "monetary_civil", "General Civil Dispute"
+            return rules[category]
+    best, best_hits = None, 0
+    for category, track, label, pattern in CATEGORY_RULES:
+        if track == "consumer" and respondent_type == "individual" and category == "consumer_general":
+            continue
+        hits = {m.group(0).lower() for m in re.finditer(pattern, text, re.IGNORECASE)}
+        if len(hits) > best_hits:
+            best, best_hits = (category, track, label), len(hits)
+    return best or ("other", "monetary_civil", "General Civil Dispute")
 
 
 def extract_amount(text: str) -> float | None:
