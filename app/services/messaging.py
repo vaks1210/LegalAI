@@ -108,12 +108,14 @@ class MessagingService:
         logger.info(f"{channel} saved to local outbox | to={mask_phone(to)}")
         return {"ok": True, "provider": "local_outbox", "id": rec["id"]}
 
-    def send_whatsapp(self, to: str, text: str, link: str | None) -> dict:
+    def send_whatsapp(self, to: str, text: str, link: str | None, lang: str | None = None) -> dict:
+        registered = {l.strip() for l in settings.WHATSAPP_TEMPLATE_LANGS.split(",") if l.strip()}
+        tpl_lang = lang if lang in registered else settings.WHATSAPP_TEMPLATE_LANG
         payload = {
             "messaging_product": "whatsapp", "to": to, "type": "template",
             "template": {
                 "name": settings.WHATSAPP_TEMPLATE_NAME,
-                "language": {"code": settings.WHATSAPP_TEMPLATE_LANG},
+                "language": {"code": tpl_lang},
                 "components": [{"type": "body", "parameters": [
                     {"type": "text", "text": _one_line(text)[:WHATSAPP_PARAM_MAX]},
                     {"type": "text", "text": link or settings.BASE_URL},
@@ -189,7 +191,8 @@ class MessagingService:
                     result = {**self._outbox(channel, to, text, link), "channel": channel}
                     break
                 if channel == "whatsapp" and self.whatsapp_configured:
-                    result = {**self.send_whatsapp(to, text, link), "channel": channel}
+                    from app.core.i18n import case_language
+                    result = {**self.send_whatsapp(to, text, link, case_language(case)), "channel": channel}
                 elif channel == "sms" and self.sms_configured:
                     result = {**self.send_sms(to, text, link), "channel": channel}
                 else:
@@ -225,27 +228,59 @@ def _amount(value) -> str:
         return ""
 
 
+def _date(value, lang: str) -> str:
+    d = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return d.strftime("%d %b %Y") if lang == "en" else d.strftime("%d/%m/%Y")
+
+
+def _msg(case: dict, key: str, **params) -> str:
+    from app.core.i18n import case_language, t
+    return t(key, case_language(case), ref=_ref(case), claimant=case.get("claimant_name", ""), **params)
+
+
 def invite_text(case: dict) -> str:
     amt = _amount(case.get("claim_amount"))
-    return (f"{case['claimant_name']} has raised a dispute with you"
-            f"{' for ' + amt if amt else ''} (case {_ref(case)}). You can resolve it online, "
-            "without going to court. Please respond within 7 days.")
+    return _msg(case, "invite_amount" if amt else "invite", amount=amt)
 
 
-def nudge_text(case: dict, days_left: int) -> str:
-    when = "today" if days_left <= 0 else f"in {days_left} day{'s' if days_left != 1 else ''}"
-    return (f"Reminder: the response window for case {_ref(case)} with {case['claimant_name']} closes {when}. "
-            "If you do not respond, the claimant may take the matter to court with a record of non-response.")
+def nudge_text(case: dict, due) -> str:
+    from app.core.i18n import case_language
+    return _msg(case, "nudge", date=_date(due, case_language(case)))
 
 
 def proposal_text(case: dict, round_num: int, amount) -> str:
     amt = _amount(amount)
-    return (f"A settlement proposal{' of ' + amt if amt else ''} has been issued in case {_ref(case)} "
-            f"(round {round_num}). Review it and accept or reject.")
+    return _msg(case, "proposal_amount" if amt else "proposal", amount=amt, round=round_num)
 
 
 def next_round_text(case: dict, round_num: int) -> str:
-    return f"Negotiation round {round_num} has opened in case {_ref(case)}. Submit your offer."
+    return _msg(case, "next_round", round=round_num)
+
+
+def payment_request_text(case: dict, payment: dict) -> str:
+    from app.core.i18n import case_language
+    lang, plan = case_language(case), payment.get("plan") or []
+    if len(plan) > 1:
+        text = _msg(case, "pay_plan", n=len(plan), amount=_amount(plan[0]["amount"]),
+                    date=_date(plan[0]["due_at"], lang))
+    else:
+        text = _msg(case, "pay_single", amount=_amount(payment["amount"]), date=_date(payment["due_at"], lang))
+    if not payment.get("link_url"):
+        text += " " + _msg(case, "quote_ref", reference=payment.get("reference", ""))
+    return text
+
+
+def payment_reminder_text(case: dict, payment: dict, inst: dict) -> str:
+    from app.core.i18n import case_language
+    lang, plan = case_language(case), payment.get("plan") or []
+    date = _date(inst["due_at"], lang)
+    if len(plan) > 1:
+        text = _msg(case, "reminder_instalment", no=inst["no"], n=len(plan), amount=_amount(inst["amount"]), date=date)
+    else:
+        text = _msg(case, "reminder_single", amount=_amount(inst["amount"]), date=date)
+    if not inst.get("link_url"):
+        text += " " + _msg(case, "quote_ref", reference=payment.get("reference", ""))
+    return text
 
 
 def _one_line(text: str) -> str:

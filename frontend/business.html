@@ -164,7 +164,8 @@
         <p class="muted">Upload a CSV with one row per dispute. Required columns: <code>respondent_name</code>,
           <code>respondent_email</code>, <code>reference</code> (your invoice / loan / agreement number).
           Optional: <code>claim_amount</code>, <code>incident_date</code>, <code>due_date</code>,
-          <code>respondent_phone</code>, <code>respondent_type</code>, <code>details</code>,
+          <code>respondent_phone</code> (invites and reminders also go by WhatsApp/SMS), <code>language</code>
+          (en, hi, bn, mr, ta, te, es, ar — the respondent's notices and portal), <code>respondent_type</code>, <code>details</code>,
           <code>dispute_text</code> (overrides the template). Re-uploading the same reference is skipped.</p>
         <div class="row">
           <div><label>Template</label><select id="tplSelect"></select></div>
@@ -452,9 +453,9 @@ async function uploadCsv() {
   $('uploadBtn').disabled = false;
 }
 function downloadSample() {
-  const csv = 'respondent_name,respondent_email,reference,claim_amount,incident_date,due_date,respondent_phone,details\n' +
-    'Ravi Traders,accounts@ravitraders.example,INV-1001,48500,2026-05-15,2026-06-15,9876543210,\n' +
-    'Meena Kumar,meena@example.com,AGR-77,25000,2026-04-01,2026-09-30,,Rent for July-September\n';
+  const csv = 'respondent_name,respondent_email,reference,claim_amount,incident_date,due_date,respondent_phone,language,details\n' +
+    'Ravi Traders,accounts@ravitraders.example,INV-1001,48500,2026-05-15,2026-06-15,9876543210,hi,\n' +
+    'Meena Kumar,meena@example.com,AGR-77,25000,2026-04-01,2026-09-30,,ta,Rent for July-September\n';
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'legalai-sample.csv'; a.click();
 }

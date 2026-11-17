@@ -20,6 +20,7 @@ from app.services.content_safety import content_safety_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
 from app.services import messaging
+from app.core.i18n import case_language
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ def deliver_invite(case: dict) -> bool:
         case_id=case["id"],
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
     )
     messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
     if not sent:
@@ -308,6 +310,7 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
         case_id=case_id,
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
     )
     phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
     if not sent and not (phone and phone.get("ok")):
@@ -362,6 +365,7 @@ async def resend_invite(case_id: str, current_user: dict = Depends(get_current_u
         case_id=case_id,
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
     )
     phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
     if not sent and not (phone and phone.get("ok")):

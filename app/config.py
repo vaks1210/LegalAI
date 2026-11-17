@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     WHATSAPP_PHONE_NUMBER_ID: str = Field(default="")
     WHATSAPP_TEMPLATE_NAME:   str = Field(default="legalai_update")
     WHATSAPP_TEMPLATE_LANG:   str = Field(default="en")
+    # Languages the template is approved in (others use WHATSAPP_TEMPLATE_LANG
+    # as the frame, with the message text itself still translated).
+    WHATSAPP_TEMPLATE_LANGS:  str = Field(default="en")
     TWILIO_ACCOUNT_SID:       str = Field(default="")
     TWILIO_AUTH_TOKEN:        str = Field(default="")
     TWILIO_FROM_NUMBER:       str = Field(default="")

@@ -79,7 +79,6 @@ def send_respondent_nudge(case: dict, now: datetime | None = None) -> str | None
     from app.core.security import respondent_portal_url
     from app.services.email_service import email_service
     from app.services import messaging
-    days_left = max(0, left.days)
     email_service.send_case_update(
         to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case["id"],
         headline=f"Reminder: please {action} by {due.strftime('%d %b %Y')}",
@@ -88,7 +87,7 @@ def send_respondent_nudge(case: dict, now: datetime | None = None) -> str | None
                  "may take the matter to court with a record of your non-response."),
         portal_url=respondent_portal_url(case), action_label="Open case",
     )
-    messaging.messaging_service.notify_respondent(case, "nudge", messaging.nudge_text(case, days_left))
+    messaging.messaging_service.notify_respondent(case, "nudge", messaging.nudge_text(case, due))
     logger.info(f"Respondent nudged | case_id={case['id']} | window={window}d")
     return key
 

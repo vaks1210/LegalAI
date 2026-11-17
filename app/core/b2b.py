@@ -117,6 +117,11 @@ def _date(value) -> str | None:
     raise ValueError(f"Unrecognised date '{text}' (use YYYY-MM-DD or DD/MM/YYYY)")
 
 
+def _lang(value) -> str | None:
+    from app.core.i18n import normalize_language
+    return normalize_language(str(value))
+
+
 def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
     """
     Validate one bulk row and return the case document fields.
@@ -135,6 +140,11 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         from app.services.messaging import normalize_phone
         if not normalize_phone(str(row["respondent_phone"])):
             raise ValueError(f"Invalid respondent_phone '{row['respondent_phone']}'")
+    language = row.get("language") or row.get("respondent_language")
+    if language:
+        from app.core.i18n import LANGUAGES, normalize_language
+        if not normalize_language(str(language)):
+            raise ValueError(f"Unsupported language '{language}' (use one of: {', '.join(LANGUAGES)})")
 
     amount = _amount(row.get("claim_amount") or row.get("amount"))
     if amount is not None and amount <= 0:
@@ -171,6 +181,7 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         "respondent_name":         row["respondent_name"],
         "respondent_email":        email,
         "respondent_phone":        row.get("respondent_phone") or None,
+        "respondent_language":     _lang(language) if language else None,
         "respondent_type":         (row.get("respondent_type") or "individual").lower(),
         "respondent_company_name": row.get("respondent_company_name") or None,
         "incident_date":           incident,

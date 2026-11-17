@@ -213,7 +213,15 @@ class EmailService:
         claim_amount,
         dispute_summary: str,
         portal_url: str | None = None,
+        language: str | None = None,
     ) -> bool:
+        from html import escape as _esc
+        from app.core.i18n import LANGUAGES, t as _t
+        intro = _t("email_intro", language) if language and language != "en" else ""
+        rtl = ' dir="rtl"' if LANGUAGES.get(language or "", {}).get("rtl") else ""
+        intro_block = (f'<p{rtl} style="color:#fff;background:#1E293B;border-left:4px solid #06B6D4;'
+                       f'padding:12px;border-radius:6px;font-size:15px;line-height:1.6;">{_esc(intro)}</p>'
+                       if intro else "")
         if not portal_url:
             from app.core.security import respondent_token
             portal_url = (
@@ -233,6 +241,7 @@ class EmailService:
         <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;
                     background:#0F2A4A;padding:32px;border-radius:8px;">
             <h2 style="color:#06B6D4;margin-bottom:4px;">LegalAI Resolver</h2>
+            {intro_block}
             <div style="background:#DC2626;border-radius:6px;padding:12px 16px;
                         margin:16px 0;">
                 <p style="color:#fff;font-weight:bold;margin:0;font-size:14px;">

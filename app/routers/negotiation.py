@@ -820,15 +820,8 @@ def _request_payment(case_id: str) -> None:
                      "full balance due."),
             portal_url=link, action_label=label,
         )
-        first = plan[0] if plan else {}
         messaging.messaging_service.notify_respondent(
-            case, "payment_request",
-            (f"Settlement reached in case {case_id[:8].upper()}. Pay Rs. {payment['amount']:,.0f} by {due}."
-             if len(plan) <= 1 else
-             f"Settlement reached in case {case_id[:8].upper()}: {len(plan)} instalments, first "
-             f"Rs. {first.get('amount', 0):,.0f} due {due}.") +
-            ("" if payment.get("link_url") else f" Quote reference {payment['reference']}."),
-            link=payment.get("link_url"))
+            case, "payment_request", messaging.payment_request_text(case, payment), link=payment.get("link_url"))
     except Exception:
         logger.exception(f"Payment request failed | case_id={case_id}")
 

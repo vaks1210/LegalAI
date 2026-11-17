@@ -668,7 +668,16 @@
         </div>
         <div class="form-group">
           <label>Respondent Phone (optional)</label>
-          <input type="text" id="respondentPhone" placeholder="Optional">
+          <input type="text" id="respondentPhone" placeholder="Optional — notices also go by WhatsApp/SMS">
+        </div>
+        <div class="form-group">
+          <label>Respondent's language</label>
+          <select id="respondentLanguage">
+            <option value="en">English</option><option value="hi">हिन्दी · Hindi</option>
+            <option value="bn">বাংলা · Bengali</option><option value="mr">मराठी · Marathi</option>
+            <option value="ta">தமிழ் · Tamil</option><option value="te">తెలుగు · Telugu</option>
+            <option value="es">Español · Spanish</option><option value="ar">العربية · Arabic</option>
+          </select>
         </div>
       </div>
       <div id="companyFields" class="hidden">
@@ -1164,6 +1173,7 @@ async function submitCase() {
       respondent_name:         document.getElementById('respondentName').value.trim(),
       respondent_email:        document.getElementById('respondentEmail').value.trim(),
       respondent_phone:        document.getElementById('respondentPhone').value.trim() || null,
+      respondent_language:     document.getElementById('respondentLanguage').value || null,
       respondent_type:         document.getElementById('respondentType').value,
       respondent_company_name: document.getElementById('companyName').value.trim() || null,
       respondent_company_reg:  document.getElementById('companyReg').value.trim() || null,
