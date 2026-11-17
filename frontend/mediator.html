@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mediator Review</title>
+<script src="/static/vendor/axios.min.js"></script>
+<script src="/static/vendor/safe-render.js"></script>
+<style>
+  :root {
+    --navy:#0b1f3a; --blue:#1859b8; --cyan:#13b8c8; --green:#14804a; --red:#c53b31;
+    --gold:#b88619; --dark:#142033; --muted:#61748f; --lgrey:#eef3f9; --white:#fff;
+    --line:rgba(15,42,74,.10); --shadow:0 12px 36px rgba(13,29,55,.08);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:Aptos,"Trebuchet MS","Segoe UI",sans-serif; color:var(--dark);
+         background:linear-gradient(180deg,#f6f8fc 0%,#ecf1f8 60%,#f8fafc 100%); min-height:100vh; }
+  nav { background:linear-gradient(135deg,var(--navy),var(--blue)); color:#fff; height:64px;
+        display:flex; align-items:center; justify-content:space-between; padding:0 24px; }
+  nav .brand { font-weight:800; font-size:19px; } nav .brand span { color:#7fe3ee; }
+  nav .right { display:flex; gap:12px; align-items:center; font-size:14px; }
+  nav select { padding:6px 10px; border-radius:8px; border:none; font:inherit; }
+  main { max-width:1180px; margin:0 auto; padding:24px 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow);
+          padding:20px; margin-bottom:18px; }
+  h2 { font-size:18px; margin-bottom:12px; } h3 { font-size:15px; margin:14px 0 8px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px; }
+  .tab { padding:9px 16px; border-radius:999px; border:1px solid var(--line); background:#fff;
+         cursor:pointer; font-weight:600; color:var(--muted); }
+  .tab.active { background:var(--navy); color:#fff; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .stat { background:var(--lgrey); border-radius:12px; padding:14px; }
+  .stat .v { font-size:24px; font-weight:800; } .stat .l { font-size:12px; color:var(--muted);
+          text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
+  label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin:10px 0 4px;
+          text-transform:uppercase; letter-spacing:.04em; }
+  input, select, textarea { width:100%; padding:10px 12px; border:1px solid #cdd8e6; border-radius:10px;
+          font:inherit; background:#fff; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .btn { padding:10px 16px; border-radius:10px; border:none; font:inherit; font-weight:700; cursor:pointer;
+         background:var(--blue); color:#fff; }
+  .btn.secondary { background:#fff; color:var(--blue); border:1px solid #bcd0ec; }
+  .btn.danger { background:#fff; color:var(--red); border:1px solid #f0c4c0; }
+  .btn:disabled { opacity:.6; cursor:wait; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
+       padding:8px; border-bottom:1px solid var(--line); }
+  td { padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr.click:hover { background:#f5f8fd; cursor:pointer; }
+  .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:700;
+           background:var(--lgrey); color:var(--navy); white-space:nowrap; }
+  .badge.good { background:#e3f5ea; color:var(--green); } .badge.bad { background:#fbe6e4; color:var(--red); }
+  .badge.wait { background:#fdf3dc; color:var(--gold); }
+  .alert { padding:10px 14px; border-radius:10px; font-size:14px; margin:10px 0; }
+  .alert.error { background:#fbe6e4; color:var(--red); } .alert.ok { background:#e3f5ea; color:var(--green); }
+  .alert.info { background:#e7f0fc; color:var(--blue); }
+  code, .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+  pre { background:#0f1b2d; color:#d8e4f5; padding:14px; border-radius:10px; overflow-x:auto; font-size:12.5px; }
+  .hidden { display:none !important; }
+  .scroll { overflow-x:auto; }
+  .flex { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  @media (max-width:640px) { nav { padding:0 12px; } nav .brand { font-size:16px; } }
+</style>
+</head>
+<body>
+<nav><div class="brand">LegalAI <span>Mediator</span></div>
+  <div class="right"><span id="whoami"></span><button class="btn secondary hidden" id="logoutBtn" onclick="logout()">Log out</button></div></nav>
+<main>
+  <section id="screenLogin" class="card hidden" style="max-width:440px;margin:40px auto;">
+    <h2>Mediator sign in</h2>
+    <div id="loginStep1"><label>Email</label><input id="loginEmail" type="email">
+      <button class="btn" style="margin-top:14px;width:100%;" onclick="requestOtp()">Send code</button></div>
+    <div id="loginStep2" class="hidden"><label>6-digit code</label><input id="otp" maxlength="6">
+      <button class="btn" style="margin-top:14px;width:100%;" onclick="verifyOtp()">Sign in</button></div>
+    <div id="loginMsg"></div>
+  </section>
+  <section id="screenQueue" class="hidden">
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;"><h2>Proposals awaiting review</h2>
+        <button class="btn secondary" onclick="loadQueue()">Refresh</button></div>
+      <p class="muted">Each AI proposal waits here until you approve it (as-is or edited). Unreviewed drafts are released automatically after the review deadline, flagged as unreviewed.</p>
+      <div class="scroll"><table><thead><tr><th>Case</th><th>Parties</th><th>Offers</th><th>AI draft</th><th>Review by</th></tr></thead>
+        <tbody id="queueRows"></tbody></table></div>
+    </div>
+    <div class="card hidden" id="review"></div>
+  </section>
+</main>
+<script>
+const API = '';
+let token = localStorage.getItem('legalai_token') || '';
+const $ = id => document.getElementById(id);
+const auth = () => ({ headers: { Authorization: `Bearer ${token}` } });
+const rs = n => (n || n === 0) ? 'Rs. ' + Number(n).toLocaleString('en-IN') : '—';
+const err = e => e.response?.data?.detail || e.message || 'Something went wrong';
+const msg = (id, text, kind='info') => { $(id).innerHTML = `<div class="alert ${kind}"></div>`; $(id).firstChild.textContent = text; };
+const unesc = v => { const t = document.createElement('textarea'); t.innerHTML = v || ''; return t.value; };
+const offer = v => Array.isArray(v) ? v.join('; ') : rs(v);
+
+async function requestOtp() {
+  try {
+    const r = await axios.post(`${API}/api/auth/request-otp`, { email: $('loginEmail').value.trim() });
+    $('loginStep1').classList.add('hidden'); $('loginStep2').classList.remove('hidden');
+    if (r.data.dev_otp) $('otp').value = r.data.dev_otp;
+  } catch (e) { msg('loginMsg', err(e), 'error'); }
+}
+async function verifyOtp() {
+  try {
+    const r = await axios.post(`${API}/api/auth/verify-otp`, { email: $('loginEmail').value.trim(), otp: $('otp').value.trim(), consent: true });
+    token = r.data.access_token; localStorage.setItem('legalai_token', token); boot();
+  } catch (e) { msg('loginMsg', err(e), 'error'); }
+}
+function logout() { localStorage.removeItem('legalai_token'); location.reload(); }
+
+async function boot() {
+  if (!token) { $('screenLogin').classList.remove('hidden'); return; }
+  try {
+    $('whoami').textContent = (await axios.get(`${API}/api/auth/me`, auth())).data.email;
+    $('logoutBtn').classList.remove('hidden');
+    await loadQueue();
+    $('screenLogin').classList.add('hidden'); $('screenQueue').classList.remove('hidden');
+  } catch (e) {
+    if (e.response?.status === 403) { $('screenLogin').classList.remove('hidden'); msg('loginMsg', 'This account is not registered as a mediator.', 'error'); }
+    else logout();
+  }
+}
+
+let queue = [];
+async function loadQueue() {
+  queue = (await axios.get(`${API}/api/mediator/queue`, auth())).data.queue;
+  $('queueRows').innerHTML = queue.map((q, i) => `<tr class="click" onclick="openReview(${i})">
+      <td class="mono">${q.reference || q.case_id.slice(0, 8)}<div class="muted">Round ${q.round}</div></td>
+      <td>${q.claimant_name}<div class="muted">vs ${q.respondent_name}</div></td>
+      <td>Ask ${offer(q.claimant_offer)}<div class="muted">Offer ${offer(q.respondent_offer)}</div></td>
+      <td>${q.draft.amount ? rs(q.draft.amount) : offer(q.draft.actions)}</td>
+      <td>${(q.review_due || '').replace('T', ' ').slice(0, 16)}</td></tr>`).join('') ||
+    '<tr><td colspan="5" class="muted">Nothing awaiting review.</td></tr>';
+}
+
+async function openReview(i) {
+  const q = queue[i];
+  const { case: c } = (await axios.get(`${API}/api/mediator/cases/${q.case_id}`, auth())).data;
+  const a = c.analytics_data || {}, l = c.legal_data || {};
+  $('review').classList.remove('hidden');
+  $('review').innerHTML = `
+    <h2>${q.reference || q.case_id.slice(0, 8)} — ${q.claimant_name} vs ${q.respondent_name}</h2>
+    <p style="font-size:14px;line-height:1.6;margin:8px 0;">${c.dispute_text}</p>
+    <div class="grid" style="margin:12px 0;">
+      <div class="stat"><div class="v">${offer(q.claimant_offer)}</div><div class="l">Claimant asks</div></div>
+      <div class="stat"><div class="v">${offer(q.respondent_offer)}</div><div class="l">Respondent offers</div></div>
+      <div class="stat"><div class="v">${rs(a.zopa_min)} – ${rs(a.zopa_max)}</div><div class="l">Fair range (confidential)</div></div>
+      <div class="stat"><div class="v">${l.legal_standing || '—'}</div><div class="l">Legal standing</div></div>
+    </div>
+    ${q.draft.amount !== null && q.draft.amount !== undefined ? `<label>Proposed amount (Rs.)</label><input id="rAmount" type="number" value="${q.draft.amount}">` : ''}
+    <label>Reasoning shown to both parties</label><textarea id="rReason" rows="6"></textarea>
+    <label>Internal note (not shown to parties)</label><input id="rNote">
+    <button class="btn" style="margin-top:14px;" onclick="approve('${q.case_id}')">Approve and issue to both parties</button>
+    <div id="reviewMsg"></div>`;
+  $('rReason').value = unesc(q.draft.reasoning);
+  $('review').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function approve(caseId) {
+  const body = { reasoning: $('rReason').value.trim(), note: $('rNote').value.trim() || null };
+  if ($('rAmount')) body.amount = Number($('rAmount').value);
+  try {
+    await axios.post(`${API}/api/mediator/cases/${caseId}/approve`, body, auth());
+    msg('reviewMsg', 'Issued to both parties.', 'ok'); await loadQueue();
+  } catch (e) { msg('reviewMsg', err(e), 'error'); }
+}
+boot();
+</script>
+</body>
+</html>

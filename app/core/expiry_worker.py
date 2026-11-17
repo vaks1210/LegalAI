@@ -85,8 +85,11 @@ async def _handle_expired_case(case: dict):
 async def _resume_analysis(case_id: str, case: dict):
     """Analysis was interrupted (e.g. server restart) — run it again."""
     logger.warning(f"Resuming interrupted analysis | case_id={case_id}")
-    from app.routers.cases import _run_full_pipeline
-    await _run_full_pipeline(case_id)
+    from app.routers.cases import _run_full_pipeline, analyse_new_case
+    if not case.get("track"):          # bulk-filed case interrupted before routing
+        await analyse_new_case(case_id)
+    else:
+        await _run_full_pipeline(case_id)
 
 
 async def _resume_mediation(case_id: str, case: dict):
@@ -94,9 +97,21 @@ async def _resume_mediation(case_id: str, case: dict):
     neg = cosmos_service.get_negotiation_by_case(case_id)
     if not neg:
         return
+    round_number = case.get("current_round", 1)
+    rnd = cosmos_service.get_round(neg["id"], round_number) or {}
+    draft = rnd.get("draft_proposal")
+    if draft and not rnd.get("proposal_issued_at"):
+        # Mediator review SLA passed: release the AI draft (flagged) rather
+        # than leave both parties waiting indefinitely.
+        logger.warning(f"Mediator review SLA passed — releasing draft | case_id={case_id}")
+        from app.routers.negotiation import issue_proposal
+        issue_proposal(case_id, round_number, draft.get("amount"), draft.get("actions"), draft.get("reasoning"),
+                       review={"released_without_review": True,
+                               "released_at": datetime.now(timezone.utc).isoformat()})
+        return
     logger.warning(f"Resuming interrupted mediation | case_id={case_id}")
     from app.routers.negotiation import _run_mediation
-    await _run_mediation(case_id, neg["id"], case.get("current_round", 1))
+    await _run_mediation(case_id, neg["id"], round_number)
 
 
 async def _resume_escalation(case_id: str):

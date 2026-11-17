@@ -94,3 +94,40 @@ def test_law_references_read_naturally():
     assert _law_ref({"act": "Rent Act", "section": "Deposit / refund provisions"}) == "Rent Act — Deposit / refund provisions"
     assert _law_ref({"act": "CPC", "section": "Order XXXVII"}) == "CPC — Order XXXVII"
     assert _law_ref({"act": "Tort law", "section": ""}) == "Tort law"
+
+
+def test_settlement_carries_acceptance_record_and_verifies(client, login):
+    import hashlib
+    headers = login("audit@docs.test")
+    r = client.post("/api/cases/submit", headers=headers, json=_submission(
+        claimant_email="audit@docs.test", respondent_email="audit-r@docs.test"))
+    case_id = r.json()["case_id"]
+    token = _invite(client, headers, case_id, "audit-r@docs.test")
+    client.post("/api/negotiation/submit-claimant-offer", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "offer_amount": 55000})
+    client.post("/api/negotiation/submit-respondent-offer", json={
+        "case_id": case_id, "respondent_token": token, "round_number": 1, "offer_amount": 35000})
+    client.post("/api/respondent/proposal-response", json={"case_id": case_id, "token": token, "decision": "ACCEPT"},
+                headers={"User-Agent": "RespondentPhone/1.0"})
+    client.post("/api/negotiation/proposal-response", headers=headers, json={
+        "case_id": case_id, "round_number": 1, "decision": "ACCEPT", "party": "claimant"})
+
+    from app.services.cosmos_service import cosmos_service
+    rnd = cosmos_service.get_negotiation_by_case(case_id)["rounds"][0]
+    cl, rs = rnd["claimant"]["decision_record"], rnd["respondent"]["decision_record"]
+    assert cl["actor"] == "audit@docs.test" and cl["method"] == "logged-in account"
+    assert rs["actor"] == "audit-r@docs.test" and rs["user_agent"] == "RespondentPhone/1.0"
+    assert cl["terms_sha256"] == rs["terms_sha256"]          # both accepted the same terms
+
+    url = client.get(f"/api/documents/{case_id}/settlement", headers=headers).json()["download_url"]
+    pdf = client.get(url.split("http://testserver", 1)[1]).content
+    text = " ".join("\n".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages).split())
+    assert "RECORD OF ACCEPTANCE" in text and "audit-r@docs.test" in text
+    assert cl["terms_sha256"][:16] in text.replace(" ", "")
+
+    case = cosmos_service.get_case(case_id)
+    assert case["settlement_sha256"] == hashlib.sha256(pdf).hexdigest()
+    ok = client.post("/api/documents/verify", files={"file": ("a.pdf", pdf, "application/pdf")}).json()
+    assert ok["valid"] and ok["case_reference"] == case_id[:8].upper()
+    bad = client.post("/api/documents/verify", files={"file": ("a.pdf", pdf + b" ", "application/pdf")}).json()
+    assert bad["valid"] is False

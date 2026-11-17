@@ -58,6 +58,7 @@ def test_health_reports_local_backends(client):
         "llm": "offline",
         "content_safety": "local_rules",
         "email": "local_outbox",
+        "payments": "manual",
     }
 
 

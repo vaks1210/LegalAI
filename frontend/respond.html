@@ -401,6 +401,20 @@ function renderActionPanel(ng, c) {
           This case has been ${status.toLowerCase().replace('_',' ')}.
         </div>
         ${c.settlement_url ? `<a class="btn btn-green btn-full" href="${c.settlement_url}" target="_blank" rel="noopener noreferrer">Download Settlement Agreement</a>` : ''}
+        ${c.payment && c.payment.status !== 'paid' ? `
+          <div class="card" style="margin-top:14px;">
+            <div class="card-title">Payment due</div>
+            <p style="font-size:15px;"><b>Rs. ${Number(c.payment.amount).toLocaleString('en-IN')}</b>
+              by <b>${(c.payment.due_at || '').slice(0, 10)}</b> — quote reference <b>${c.payment.reference}</b>.</p>
+            ${c.payment.link_url
+              ? `<a class="btn btn-primary btn-full" style="margin-top:10px;" href="${c.payment.link_url}" target="_blank" rel="noopener noreferrer">Pay now</a>`
+              : `<div style="font-size:14px;line-height:1.7;margin-top:8px;">
+                   ${c.payment.payee?.upi_id ? `UPI: <b>${c.payment.payee.upi_id}</b><br>` : ''}
+                   ${c.payment.payee?.account_number ? `Bank transfer: ${c.payment.payee.account_name || ''}, A/c <b>${c.payment.payee.account_number}</b>, IFSC <b>${c.payment.payee.ifsc || ''}</b><br>` : ''}
+                   ${!c.payment.payee?.upi_id && !c.payment.payee?.account_number ? 'Pay the claimant as agreed and keep the receipt.' : ''}
+                 </div>`}
+          </div>` : ''}
+        ${c.payment && c.payment.status === 'paid' ? `<p style="margin-top:12px;color:var(--green);font-weight:700;">Payment received — thank you. This matter is closed.</p>` : ''}
       </div>
     `;
     return;

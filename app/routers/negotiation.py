@@ -1,13 +1,15 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from app.core.background import in_thread
 from app.config import settings
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.exceptions import CaseNotFound, InvalidCaseState, UnauthorizedAccess
+from app.core.access import require_claimant_side
+from app.core.audit import decision_record
 from app.core.negotiation_rules import check_direct_settlement
 from app.core.security import claimant_portal_url, respondent_portal_url, verify_respondent_token
 from app.models.case import CaseStatus
@@ -374,8 +376,7 @@ async def submit_claimant_offer(
     case = cosmos_service.get_case(body.case_id)
     if not case:
         raise CaseNotFound(body.case_id)
-    if case.get("claimant_email") != current_user.get("email"):
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     valid_states = {
         CaseStatus.ANALYZED.value,
@@ -441,6 +442,44 @@ async def submit_respondent_offer(
 # AI MEDIATION BACKGROUND TASK
 # ─────────────────────────────────────────────────────────────
 
+def mediator_review_required(case: dict) -> bool:
+    if settings.REQUIRE_MEDIATOR_REVIEW:
+        return True
+    if case.get("org_id"):
+        org = cosmos_service.get_org(case["org_id"]) or {}
+        return bool((org.get("settings") or {}).get("require_mediator_review"))
+    return False
+
+
+def issue_proposal(case_id: str, round_number: int, amount, actions, reasoning,
+                   review: dict | None = None) -> None:
+    """Publish a proposal to both parties (after AI mediation or mediator review)."""
+    case = cosmos_service.get_case(case_id)
+    neg = cosmos_service.get_negotiation_by_case(case_id)
+    cosmos_service.update_round_in_negotiation(neg["id"], round_number, {
+        "ai_proposed_amount":          amount,
+        "ai_proposed_actions":         actions,
+        "ai_reasoning":                reasoning,
+        "settlement_candidate_amount": amount,
+        "settlement_candidate_reason": reasoning,
+        "proposal_issued_at":          _now(),
+        **({"mediator_review": review} if review else {}),
+    })
+    cosmos_service.transition_case(
+        case_id, CaseStatus.PROPOSAL_ISSUED,
+        {"current_round": round_number, "action_required_by": None, "awaiting_mediator": False},
+    )
+    for to_email, party_name, portal in [
+        (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
+        (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
+    ]:
+        email_service.send_proposal(
+            to_email=to_email, party_name=party_name, case_id=case_id, round_num=round_number,
+            proposed_amount=amount or 0, reasoning=reasoning or "", portal_url=portal,
+        )
+    logger.info(f"Proposal issued | case_id={case_id} | round={round_number} | amount={amount}")
+
+
 async def _run_mediation(case_id: str, neg_id: str, round_number: int):
     """
     Runs the AI negotiation agent and issues a proposal.
@@ -478,44 +517,28 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
             respondent_offer=respondent_offer,
         )
 
-        now = _now()
-        cosmos_service.update_round_in_negotiation(neg_id, round_number, {
-            "ai_proposed_amount":          proposal.get("proposed_amount"),
-            "ai_proposed_actions":         proposal.get("proposed_actions"),
-            "ai_reasoning":                proposal.get("reasoning"),
-            "settlement_candidate_amount": proposal.get("proposed_amount"),
-            "settlement_candidate_reason": proposal.get("reasoning"),
-            "proposal_issued_at":          now,
-        })
+        # Human-in-the-loop: when review is required the AI proposal is held
+        # as a draft for a mediator; otherwise it goes straight to the parties.
+        if mediator_review_required(case):
+            cosmos_service.update_round_in_negotiation(neg_id, round_number, {
+                "draft_proposal": {
+                    "amount":    proposal.get("proposed_amount"),
+                    "actions":   proposal.get("proposed_actions"),
+                    "reasoning": proposal.get("reasoning"),
+                    "drafted_at": _now(),
+                },
+            })
+            # Review SLA: the watchdog releases an unreviewed draft after this.
+            cosmos_service.update_case(case_id, {
+                "awaiting_mediator": True,
+                "current_deadline": (datetime.now(timezone.utc)
+                                     + timedelta(hours=settings.MEDIATOR_REVIEW_SLA_HOURS)).isoformat(),
+            })
+            logger.info(f"Proposal drafted for mediator review | case_id={case_id} | round={round_number}")
+            return
 
-        cosmos_service.transition_case(
-            case_id,
-            CaseStatus.PROPOSAL_ISSUED,
-            {"current_round": round_number, "action_required_by": None},
-        )
-
-        proposed_amount = proposal.get("proposed_amount") or 0
-        reasoning       = proposal.get("reasoning") or ""
-
-        # EMAIL both parties with the proposal
-        for to_email, party_name, portal in [
-            (case["claimant_email"],   case["claimant_name"],   _portal_url(case, "claimant")),
-            (case["respondent_email"], case["respondent_name"], _portal_url(case, "respondent")),
-        ]:
-            email_service.send_proposal(
-                to_email=to_email,
-                party_name=party_name,
-                case_id=case_id,
-                round_num=round_number,
-                proposed_amount=proposed_amount,
-                reasoning=reasoning,
-                portal_url=portal,
-            )
-
-        logger.info(
-            f"Mediation complete | case_id={case_id} | "
-            f"round={round_number} | proposed=Rs.{proposed_amount:,.0f}"
-        )
+        issue_proposal(case_id, round_number, proposal.get("proposed_amount"),
+                       proposal.get("proposed_actions"), proposal.get("reasoning"))
 
     except Exception as e:
         logger.error(f"Mediation failed | case_id={case_id} | error={e}", exc_info=True)
@@ -530,6 +553,7 @@ async def _run_mediation(case_id: str, neg_id: str, round_number: int):
 async def proposal_response(
     body: ProposalResponseRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     current_user: dict = Depends(get_current_user_optional),
 ):
     """
@@ -566,8 +590,7 @@ async def proposal_response(
         # Previously an unauthenticated request could decide as the claimant.
         if not current_user:
             raise HTTPException(status_code=401, detail="Login required to respond as claimant.")
-        if current_user["email"].lower() != case["claimant_email"].lower():
-            raise UnauthorizedAccess()
+        require_claimant_side(case, current_user)
     elif body.party == "respondent":
         _require_respondent(case, body.respondent_token)
 
@@ -596,11 +619,16 @@ async def proposal_response(
         }
 
     # Record ONLY this party's decision, atomically (see record_offer).
+    actor = (current_user or {}).get("email") if body.party == "claimant" else case["respondent_email"]
+    method = "logged-in account" if body.party == "claimant" else "signed respondent link"
+
     def record_decision(r: dict) -> None:
         side = r[body.party]
         if side.get("decision", ProposalDecision.PENDING.value) == ProposalDecision.PENDING.value:
             side["decision"]   = body.decision.value
             side["decided_at"] = _now()
+            side["decision_record"] = {**decision_record(http_request, actor, method, r),
+                                       "decision": body.decision.value}
 
     round_doc = cosmos_service.mutate_round(neg["id"], round_number, record_decision)
 
@@ -729,11 +757,42 @@ async def _handle_settlement(case_id: str):
                 download_url=settlement_url or _portal_url(case, "claimant" if to_email == case["claimant_email"] else "respondent"),
             )
 
+        _request_payment(case_id)
         logger.info(f"Case settled | case_id={case_id} | amount=Rs.{settled_amount:,.0f}")
 
     except Exception as e:
         logger.error(f"Settlement handling failed | case_id={case_id} | error={e}", exc_info=True)
         cosmos_service.update_case(case_id, {"settlement_error": str(e), "settlement_error_at": _now()})
+
+
+def _request_payment(case_id: str) -> None:
+    """Create the payment request for a settled monetary case and tell the respondent how to pay."""
+    from app.services import payments
+    try:
+        case = cosmos_service.get_case(case_id)
+        payment = payments.create_payment_request(case)
+        if not payment or payment.get("status") == "paid":
+            return
+        due = (payment.get("due_at") or "")[:10]
+        if payment.get("link_url"):
+            how, link, label = "Pay securely online using the link below.", payment["link_url"], "Pay now"
+        else:
+            payee = payment.get("payee") or {}
+            parts = [f"UPI: {payee['upi_id']}" if payee.get("upi_id") else "",
+                     (f"Bank transfer to {payee.get('account_name', '')}, A/c {payee['account_number']}, "
+                      f"IFSC {payee.get('ifsc', '')}") if payee.get("account_number") else ""]
+            details = "; ".join(p for p in parts if p) or "as agreed with the claimant"
+            how = f"Pay {details}, quoting reference {payment['reference']}."
+            link, label = _portal_url(case, "respondent"), "View settlement"
+        email_service.send_case_update(
+            to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case_id,
+            headline=f"Payment due: Rs. {payment['amount']:,.0f} by {due}",
+            summary=f"Under your settlement agreement, Rs. {payment['amount']:,.0f} is due to "
+                    f"{case['claimant_name']} by {due}. {how}",
+            portal_url=link, action_label=label,
+        )
+    except Exception:
+        logger.exception(f"Payment request failed | case_id={case_id}")
 
 
 async def _handle_escalation(case_id: str):
@@ -851,8 +910,7 @@ async def proof_response(
         raise CaseNotFound(body.case_id)
 
     if body.party == "claimant":
-        if not current_user or current_user["email"].lower() != case["claimant_email"].lower():
-            raise UnauthorizedAccess()
+        require_claimant_side(case, current_user)
     elif body.party == "respondent":
         _require_respondent(case, body.respondent_token)
     else:
@@ -933,8 +991,7 @@ async def get_negotiation_status(
 
     # Only the authenticated claimant gets the full negotiation status here
     # (it includes both parties' offers). Respondents use GET /api/respondent/case/{id}.
-    if (current_user.get("email") or "").lower() != (case.get("claimant_email") or "").lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
     neg          = cosmos_service.get_negotiation_by_case(case_id)
     round_number = case.get("current_round", 0)

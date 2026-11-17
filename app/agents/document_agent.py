@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import io
 from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
@@ -103,6 +104,12 @@ async def generate_settlement_agreement(case: dict, settled_amount: float) -> st
     pdf_bytes = await _generate_settlement_pdf(
         case, intake, legal, settled_amount, track
     )
+    # Fingerprint of the issued agreement: lets anyone verify later that a
+    # copy is the unaltered document both parties received.
+    cosmos_service.update_case(case_id, {
+        "settlement_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+        "settlement_generated_at": datetime.now(timezone.utc).isoformat(),
+    })
     blob_name = f"settlement_{case_id}.pdf"
     blob_service.upload("signed", blob_name, pdf_bytes)
     url = blob_service.generate_download_url("signed", blob_name, expiry_hours=720)
@@ -886,6 +893,26 @@ def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: lis
     return content
 
 
+def _mediator_review(case: dict) -> dict:
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    rnd = next((r for r in (neg or {}).get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    return rnd.get("mediator_review") or {}
+
+
+def _acceptance_records(case: dict) -> list:
+    """Decision records (who/when/how/terms fingerprint) for the settled round."""
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    if not neg:
+        return []
+    rnd = next((r for r in neg.get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    out = []
+    for party in ("claimant", "respondent"):
+        rec = (rnd.get(party) or {}).get("decision_record")
+        if rec:
+            out.append((party, rec))
+    return out
+
+
 async def _settlement_actions(case: dict) -> list:
     """Agreed actions for a non-monetary settlement (from the accepted round)."""
     if case.get("track") != "non_monetary":
@@ -988,6 +1015,29 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
                 _body_para(text),
                 Spacer(1, 2*mm),
             ]))
+
+    # Evidence of consent — how each party accepted these exact terms.
+    records = _acceptance_records(case)
+    if records:
+        story.append(_section_heading("Record of Acceptance", GREEN))
+        for party, rec in records:
+            when = _fmt_date(rec.get("at"))
+            time_part = str(rec.get("at") or "")[11:19]
+            details = [f"{party.title()}: {rec.get('actor') or 'n/a'}",
+                       f"{rec.get('decision', 'ACCEPT')} on {when}{(' at ' + time_part + ' UTC') if time_part else ''}",
+                       f"via {rec.get('method') or 'platform'}"]
+            if rec.get("ip"):
+                details.append(f"IP {rec['ip']}")
+            story.append(_bullet(" | ".join(details)))
+        story.append(_body_para(
+            f"Fingerprint of the accepted terms (SHA-256): {records[0][1].get('terms_sha256', 'n/a')}"))
+        review = _mediator_review(case)
+        if review.get("reviewed_by"):
+            story.append(_body_para(
+                f"The settlement proposal was reviewed and approved by mediator {review['reviewed_by']} "
+                f"on {_fmt_date(review.get('reviewed_at'))}."))
+        elif review.get("released_without_review"):
+            story.append(_body_para("The settlement proposal was issued by the AI mediator without human review."))
 
     # Signature blocks
     story.append(Spacer(1, 8*mm))

@@ -11,7 +11,7 @@ from app.core.exceptions import LegalAIException, legalai_exception_handler
 from app.core.rate_limiter import RateLimiterMiddleware
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.core.input_validation import InputValidationMiddleware
-from app.routers import auth, cases, negotiation, documents, respondent, files
+from app.routers import auth, cases, negotiation, documents, respondent, files, orgs, payments, mediator
 from app.core.security import validate_security_settings
 from app.core.monitoring import MonitoringMiddleware, setup_app_insights
 
@@ -70,6 +70,7 @@ if settings.RATE_LIMIT_ENABLED:
             "/api/auth/request-otp": (5,  300),
             "/api/auth/verify-otp":  (10, 300),
             "/api/cases/submit":     (3,  3600),
+            "/api/orgs":             (120, 60),
             "/api/":                 (200, 60),
         },
     )
@@ -94,6 +95,9 @@ app.include_router(negotiation.router, prefix="/api/negotiation", tags=["negotia
 app.include_router(documents.router,   prefix="/api/documents",   tags=["documents"])
 app.include_router(respondent.router,  prefix="/api/respondent",  tags=["respondent"])
 app.include_router(files.router,       prefix="/api/files",       tags=["files"])
+app.include_router(orgs.router,        prefix="/api/orgs",        tags=["organisations"])
+app.include_router(payments.router,    prefix="/api/payments",    tags=["payments"])
+app.include_router(mediator.router,    prefix="/api/mediator",    tags=["mediator"])
 
 # ── Static / Frontend ─────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
@@ -102,6 +106,16 @@ app.mount("/static", StaticFiles(directory="frontend"), name="static")
 @app.get("/", include_in_schema=False)
 async def serve_frontend():
     return FileResponse("frontend/index.html")
+
+
+@app.get("/mediator", include_in_schema=False)
+async def serve_mediator_console():
+    return FileResponse("frontend/mediator.html")
+
+
+@app.get("/business", include_in_schema=False)
+async def serve_business_console():
+    return FileResponse("frontend/business.html")
 
 
 @app.get("/respond/{case_id}", include_in_schema=False)
