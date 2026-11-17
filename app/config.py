@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     SENDGRID_API_KEY:    str = Field(default="")
     SENDGRID_FROM_EMAIL: str = Field(default="")
 
+    # ── WhatsApp / SMS (blank = local outbox in development) ──
+    WHATSAPP_TOKEN:           str = Field(default="")
+    WHATSAPP_PHONE_NUMBER_ID: str = Field(default="")
+    WHATSAPP_TEMPLATE_NAME:   str = Field(default="legalai_update")
+    WHATSAPP_TEMPLATE_LANG:   str = Field(default="en")
+    # Languages the template is approved in (others use WHATSAPP_TEMPLATE_LANG
+    # as the frame, with the message text itself still translated).
+    WHATSAPP_TEMPLATE_LANGS:  str = Field(default="en")
+    TWILIO_ACCOUNT_SID:       str = Field(default="")
+    TWILIO_AUTH_TOKEN:        str = Field(default="")
+    TWILIO_FROM_NUMBER:       str = Field(default="")
+    DEFAULT_COUNTRY_CODE:     str = Field(default="91")
+
     # ── Content Safety ───────────────────────────────────
     CONTENT_SAFETY_KEY:      str = Field(default="")
     CONTENT_SAFETY_ENDPOINT: str = Field(default="")
@@ -115,6 +128,11 @@ class Settings(BaseSettings):
             "llm":            self.llm_provider,
             "content_safety": "azure" if self.use_azure_content_safety else "local_rules",
             "email":          "sendgrid" if self.use_sendgrid else "local_outbox",
+            "messaging":      "+".join(m for m, on in (
+                ("whatsapp_cloud", bool(self.WHATSAPP_TOKEN.strip() and self.WHATSAPP_PHONE_NUMBER_ID.strip())),
+                ("twilio_sms", bool(self.TWILIO_ACCOUNT_SID.strip() and self.TWILIO_AUTH_TOKEN.strip()
+                                    and self.TWILIO_FROM_NUMBER.strip())),
+            ) if on) or "local_outbox",
             "payments":       "razorpay" if (self.RAZORPAY_KEY_ID and self.RAZORPAY_KEY_SECRET) else "manual",
         }
 

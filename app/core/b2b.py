@@ -50,29 +50,29 @@ BUILTIN_TEMPLATES = {
     "overdue_invoice": {
         "title": "Overdue invoice",
         "text": ("{claimant} supplied goods or services to {respondent} and raised invoice {reference} "
-                 "dated {incident_date} for Rs. {amount}. Payment was due on {due_date} but remains unpaid "
+                 "dated {incident_date} for {amount}. Payment was due on {due_date} but remains unpaid "
                  "despite reminder emails sent to {respondent}. {claimant} seeks payment of the outstanding "
-                 "Rs. {amount} under the contract. {evidence} {details}"),
+                 "{amount} under the contract. {evidence} {details}"),
     },
     "unpaid_rent": {
         "title": "Unpaid rent",
         "text": ("{respondent} occupies premises let by {claimant} under rent agreement {reference}. "
-                 "Unpaid rent of Rs. {amount} is outstanding for the period ending {due_date}, despite "
+                 "Unpaid rent of {amount} is outstanding for the period ending {due_date}, despite "
                  "written reminders and emails to {respondent}. {claimant} seeks payment of the rent arrears of "
-                 "Rs. {amount}. {evidence} {details}"),
+                 "{amount}. {evidence} {details}"),
     },
     "loan_default": {
         "title": "Loan instalments overdue",
         "text": ("{respondent} borrowed money from {claimant} under loan account {reference}, disbursed on "
-                 "{incident_date}. Repayment instalments due up to {due_date} have not been paid and Rs. "
+                 "{incident_date}. Repayment instalments due up to {due_date} have not been paid and "
                  "{amount} is outstanding, despite repayment reminders sent by email and SMS. {claimant} seeks repayment of the "
-                 "outstanding Rs. {amount} under the loan agreement. {evidence} {details}"),
+                 "outstanding {amount} under the loan agreement. {evidence} {details}"),
     },
     "cheque_bounce": {
         "title": "Dishonoured cheque",
-        "text": ("{respondent} issued a cheque to {claimant} for Rs. {amount} towards an existing debt "
+        "text": ("{respondent} issued a cheque to {claimant} for {amount} towards an existing debt "
                  "(reference {reference}). The bounced cheque was returned unpaid by the bank on "
-                 "{due_date}. {claimant} seeks payment of Rs. {amount}. {evidence} {details}"),
+                 "{due_date}. {claimant} seeks payment of {amount}. {evidence} {details}"),
     },
 }
 
@@ -117,6 +117,11 @@ def _date(value) -> str | None:
     raise ValueError(f"Unrecognised date '{text}' (use YYYY-MM-DD or DD/MM/YYYY)")
 
 
+def _lang(value) -> str | None:
+    from app.core.i18n import normalize_language
+    return normalize_language(str(value))
+
+
 def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
     """
     Validate one bulk row and return the case document fields.
@@ -131,6 +136,21 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         raise ValueError(f"Invalid respondent_email '{row['respondent_email']}'")
     if email == (org.get("contact_email") or "").lower():
         raise ValueError("Respondent email is the organisation's own contact email")
+    from app.core.jurisdictions import JURISDICTIONS, normalize_jurisdiction
+    raw_j = row.get("jurisdiction") or row.get("country") or (org.get("settings") or {}).get("jurisdiction") or "IN"
+    jcode = normalize_jurisdiction(raw_j)
+    if not jcode:
+        raise ValueError(f"Unsupported jurisdiction '{raw_j}' (use one of: {', '.join(JURISDICTIONS)})")
+    pack = JURISDICTIONS[jcode]
+    if row.get("respondent_phone"):
+        from app.services.messaging import normalize_phone
+        if not normalize_phone(str(row["respondent_phone"]), default_cc=pack.phone_cc):
+            raise ValueError(f"Invalid respondent_phone '{row['respondent_phone']}'")
+    language = row.get("language") or row.get("respondent_language")
+    if language:
+        from app.core.i18n import LANGUAGES, normalize_language
+        if not normalize_language(str(language)):
+            raise ValueError(f"Unsupported language '{language}' (use one of: {', '.join(LANGUAGES)})")
 
     amount = _amount(row.get("claim_amount") or row.get("amount"))
     if amount is not None and amount <= 0:
@@ -149,9 +169,11 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         if not key or key not in templates:
             raise ValueError("Provide dispute_text or a known template "
                              f"({', '.join(sorted(templates))})")
-        text = render_template(templates[key]["text"], {
+        from app.core.jurisdictions import money
+        body = re.sub(r"Rs\.\s*\{amount\}", "{amount}", templates[key]["text"])
+        text = render_template(body, {
             "claimant": claimant, "respondent": row["respondent_name"],
-            "amount": f"{amount:,.0f}" if amount else None, "reference": row["reference"],
+            "amount": money(amount, pack.currency) if amount else None, "reference": row["reference"],
             "incident_date": _pretty_date(incident), "due_date": _pretty_date(due),
             "details": row.get("details"),
             "evidence": (f"Supporting documents available: {row['evidence']}." if row.get("evidence") else None),
@@ -167,11 +189,13 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         "respondent_name":         row["respondent_name"],
         "respondent_email":        email,
         "respondent_phone":        row.get("respondent_phone") or None,
+        "respondent_language":     _lang(language) if language else None,
         "respondent_type":         (row.get("respondent_type") or "individual").lower(),
         "respondent_company_name": row.get("respondent_company_name") or None,
         "incident_date":           incident,
         "claim_amount":            amount,
-        "currency":                "INR",
+        "currency":                pack.currency,
+        "jurisdiction":            jcode,
         "claimant_consent":        True,   # accepted by the organisation's terms
         "disclaimer_acknowledged": True,
     }

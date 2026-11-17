@@ -20,9 +20,12 @@ async def razorpay_webhook(request: Request):
     if event.get("event") != "payment_link.paid":
         return {"ignored": event.get("event")}
     link = (((event.get("payload") or {}).get("payment_link") or {}).get("entity") or {})
-    case = cosmos_service.get_case(link.get("reference_id") or "")
-    if not case or (case.get("payment") or {}).get("link_id") != link.get("id"):
+    reference = link.get("reference_id") or ""
+    case_id = reference.rsplit("-", 1)[0] if reference.count("-") > 4 else reference   # "<case uuid>-<instalment>"
+    case = cosmos_service.get_case(case_id)
+    plan = ((case or {}).get("payment") or {}).get("plan") or []
+    if not case or not any(i.get("link_id") == link.get("id") for i in plan):
         logger.warning(f"Razorpay webhook for unknown link | link={link.get('id')}")
         return {"ignored": "unknown payment link"}
-    payments.mark_paid(case["id"], "razorpay", {"gateway_status": link.get("status")})
+    payments.mark_paid(case["id"], "razorpay", {"gateway_status": link.get("status")}, link_id=link.get("id"))
     return {"ok": True}

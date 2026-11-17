@@ -1,5 +1,6 @@
 import logging
 from app.services.openai_service import log_llm_fallback, openai_service
+from app.core.jurisdictions import localize_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ INSTRUCTIONS:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=False,
             temperature=0.1,

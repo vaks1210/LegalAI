@@ -45,7 +45,7 @@ def test_monetary_settlement_agreement_has_real_terms(client, login):
     url = client.get(f"/api/documents/{case_id}/settlement", headers=headers).json()["download_url"]
     text = _pdf_text(client, url)
     assert "To be filled" not in text
-    assert "Rs. 60,000" in text and "within 14 days" in text
+    assert "Rs. 60,000" in text and "shall be paid by" in text
     assert "FULL AND FINAL RELEASE" in text and "GOVERNING LAW" in text
     assert "WEAKNESSES" not in text
 

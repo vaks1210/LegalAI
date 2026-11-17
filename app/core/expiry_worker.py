@@ -27,6 +27,70 @@ async def run_expiry_check():
     for case in expired:
         await _handle_expired_case(case)
 
+    expired_ids = {c["id"] for c in expired}
+    for case in cases:
+        if case["id"] not in expired_ids:
+            try:
+                send_respondent_nudge(case)
+            except Exception:
+                logger.exception(f"Nudge failed | case_id={case['id']}")
+
+
+# States where the case is waiting on the respondent, and the label used in
+# the reminder. A nudge goes out NUDGE_DAYS before the deadline, once each.
+RESPONDENT_ACTION_STATES = {
+    CaseStatus.INVITE_SENT.value:            "respond to the dispute",
+    CaseStatus.RESPONDENT_VIEWED.value:      "submit your response",
+    CaseStatus.WAITING_FOR_RESPONDENT.value: "submit your offer",
+}
+NUDGE_DAYS = (3, 1)
+
+
+def send_respondent_nudge(case: dict, now: datetime | None = None) -> str | None:
+    """Remind a respondent (email + WhatsApp/SMS) before their window closes."""
+    action = RESPONDENT_ACTION_STATES.get(case.get("status"))
+    deadline = case.get("current_deadline")
+    if not action or not deadline:
+        return None
+    now = now or datetime.now(timezone.utc)
+    due = datetime.fromisoformat(deadline)
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    left = due - now
+    if left.total_seconds() <= 0:
+        return None
+    window = next((d for d in sorted(NUDGE_DAYS) if left <= timedelta(days=d)), None)
+    if window is None:
+        return None
+    key = f"{case['status']}:{deadline}:{window}d"
+    claimed = {}
+
+    def claim(c):
+        sent = c.setdefault("nudges_sent", [])
+        if key in sent:
+            return
+        sent.append(key)
+        del sent[:-20]
+        claimed["ok"] = True
+    case = cosmos_service._mutate_case(case["id"], claim)
+    if not claimed:
+        return None
+
+    from app.core.security import respondent_portal_url
+    from app.services.email_service import email_service
+    from app.services import messaging
+    email_service.send_case_update(
+        to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case["id"],
+        headline=f"Reminder: please {action} by {due.strftime('%d %b %Y')}",
+        summary=(f"{case['claimant_name']}'s dispute with you is waiting for you to {action}. "
+                 f"The window closes on {due.strftime('%d %B %Y')}. If you do not take part, the claimant "
+                 "may take the matter to court with a record of your non-response."),
+        portal_url=respondent_portal_url(case), action_label="Open case",
+    )
+    messaging.messaging_service.notify_respondent(case, "nudge", messaging.nudge_text(case, due))
+    logger.info(f"Respondent nudged | case_id={case['id']} | window={window}d")
+    return key
+
 
 async def _handle_expired_case(case: dict):
     """Applies the correct expiry action based on current status."""
@@ -123,6 +187,29 @@ async def _resume_escalation(case_id: str):
     })
 
 
+async def _refresh_court_file(case_id: str) -> str:
+    """
+    Rebuild the court file after auto-escalation so it carries the dated
+    service-of-notice record (email, portal views, WhatsApp/SMS notices).
+    Falls back to the file generated at analysis time.
+    """
+    case = cosmos_service.get_case(case_id)
+    docs = case.get("documents_data") or {}
+    try:
+        from app.agents.document_agent import _generate_court_file
+        from app.services.blob_service import blob_service
+        pdf = await _generate_court_file(case, case.get("intake_data") or {}, case.get("legal_data") or {},
+                                         case.get("analytics_data") or {})
+        name = f"court_file_escalated_{case_id}.pdf"
+        blob_service.upload("pdfs", name, pdf)
+        url = blob_service.generate_download_url("pdfs", name)
+        cosmos_service.update_case(case_id, {"documents_data": {**docs, "court_file_url": url}})
+        return url
+    except Exception:
+        logger.exception(f"Court file refresh failed | case_id={case_id}")
+        return docs.get("court_file_url", "")
+
+
 async def _expire_analyzed(case_id: str):
     """
     ANALYZED → ABANDONED
@@ -148,8 +235,7 @@ async def _expire_invite_sent(case_id: str, case: dict):
         )
     })
 
-    docs_data = case.get("documents_data") or {}
-    court_url = docs_data.get("court_file_url", "")
+    court_url = await _refresh_court_file(case_id)
 
     from app.services.email_service import email_service
     email_service.send(
@@ -185,8 +271,7 @@ async def _expire_respondent_viewed(case_id: str, case: dict):
         )
     })
 
-    docs_data = case.get("documents_data") or {}
-    court_url = docs_data.get("court_file_url", "")
+    court_url = await _refresh_court_file(case_id)
 
     from app.services.email_service import email_service
     email_service.send(
@@ -305,6 +390,8 @@ async def start_expiry_worker():
         try:
             # Blocking DB/PDF/email work — keep it off the request event loop.
             await asyncio.to_thread(lambda: asyncio.run(run_expiry_check()))
+            from app.services.payments import check_payment_schedules
+            await asyncio.to_thread(check_payment_schedules)
         except Exception as e:
             logger.error(f"Expiry worker error: {e}")
         await asyncio.sleep(3600)

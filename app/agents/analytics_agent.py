@@ -1,6 +1,8 @@
 import logging
 from app.services.openai_service import log_llm_fallback, openai_service
 from app.core.coerce import to_number
+from app.core.jurisdictions import localize_prompt
+from app.core.jurisdictions import money
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +415,7 @@ DISPUTE OVERVIEW:
 PARTIES:
 - Claimant: {case['claimant_name']} | {case['claimant_state']}
 - Respondent: {case['respondent_name']} ({case.get('respondent_type', 'individual')})
-- Stated claim amount: Rs. {(case.get('claim_amount') or 0):,.0f}
+- Stated claim amount: {money((case.get('claim_amount') or 0), case)}
 - Track: {track}
 
 INTAKE ANALYSIS:
@@ -435,7 +437,7 @@ INSTRUCTIONS:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=True,   # gpt-4o for calculation accuracy
             temperature=0.1,        # low temperature for consistent arithmetic
@@ -496,22 +498,22 @@ def _build_context(case: dict, intake: dict, legal: dict, track: str) -> dict:
     ]
     if track == "employment":
         total_dues = legal.get("total_statutory_dues", 0) or 0
-        legal_lines.append(f"- Total statutory dues (confirmed by legal agent): Rs. {total_dues:,.0f}")
+        legal_lines.append(f"- Total statutory dues (confirmed by legal agent): {money(total_dues, case)}")
         entitlements = legal.get("statutory_entitlements", {})
         for k, v in entitlements.items():
             if isinstance(v, dict) and v.get("amount", 0) > 0:
-                legal_lines.append(f"  → {k}: Rs. {(v.get('amount') or 0):,.0f} ({v.get('basis', '')})")
+                legal_lines.append(f"  → {k}: {money((v.get('amount') or 0), case)} ({v.get('basis', '')})")
 
     claim_amount = case.get("claim_amount", 0) or 0
     quant_lines = [
-        f"- Confirmed claim amount: Rs. {claim_amount:,.0f}",
+        f"- Confirmed claim amount: {money(claim_amount, case)}",
         f"- Respondent type: {case.get('respondent_type', 'individual')}",
         f"- Respondent is company: {intake.get('respondent_is_company', False)}",
         f"- State: {case.get('claimant_state', 'India')}",
     ]
     if track == "employment":
         quant_lines.append(
-            f"- Statutory dues floor for ZOPA: Rs. {(legal.get('total_statutory_dues') or 0):,.0f}"
+            f"- Statutory dues floor for ZOPA: {money((legal.get('total_statutory_dues') or 0), case)}"
         )
     if track == "consumer":
         from app.core.legal_reference import get_consumer_forum_tier
@@ -633,7 +635,9 @@ def _fallback_analytics(case: dict, track: str, intake: dict, legal: dict) -> di
         optimal = zopa_min = zopa_max = None
 
     from app.agents.offline_analysis import win_probability
+    from app.core.jurisdictions import case_jurisdiction
     win = win_probability(legal_standing, evidence_score)
+    court = case_jurisdiction(case).extra["court"]
 
     return {
         "track":               track,
@@ -646,9 +650,9 @@ def _fallback_analytics(case: dict, track: str, intake: dict, legal: dict) -> di
         "zopa_optimal":        optimal,
         "negotiation_anchor":  optimal,
         "zopa_reasoning":      f"Rule-based: {legal_standing} legal standing with evidence score {evidence_score}/100 applied to the claim amount",
-        "court_cost_estimate": max(50000, (claim or 0) * 0.05),
-        "court_cost_breakdown": {"filing_fee": 5000, "lawyer_fees": 40000, "miscellaneous": 10000},
-        "time_to_resolution_months": 30,
+        "court_cost_estimate": max(court["cost_min"], (claim or 0) * 0.05),
+        "court_cost_breakdown": {k: court[k] for k in ("filing_fee", "lawyer_fees", "miscellaneous")},
+        "time_to_resolution_months": court["months"],
         "recommended_path":    "mediation",
         "recommended_path_reason": "Mediation is faster and far cheaper than litigation for a claim of this size",
         "settlement_urgency":  "MEDIUM",

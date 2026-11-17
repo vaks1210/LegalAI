@@ -6,6 +6,7 @@
 <title>LegalAI Resolver — Respond to Dispute</title>
 <script src="/static/vendor/axios.min.js"></script>
 <script src="/static/vendor/safe-render.js"></script>
+<script src="/static/vendor/i18n.js"></script>
 <style>
   :root {
     --navy:#0b1f3a; --blue:#1859b8; --cyan:#13b8c8;
@@ -38,6 +39,16 @@
     background:linear-gradient(135deg, #d86042, #ee8a52); color:white; padding:7px 14px;
     border-radius:999px; font-size:12px; font-weight:800; box-shadow:0 8px 18px rgba(197,59,49,0.20);
   }
+  textarea, input, select, button { font-family: inherit; }
+  .nav-right { display:flex; gap:10px; align-items:center; }
+  .lang-select {
+    width:auto; padding:6px 8px; border-radius:10px; font-size:13px; font-weight:700;
+    background:rgba(255,255,255,0.14); color:white; border:1px solid rgba(255,255,255,0.3);
+  }
+  .lang-select option { color:#0b1f3a; }
+  .mt-note { font-size:12px; color:var(--muted); margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .mt-note button { background:none; border:none; color:var(--blue); font-weight:700; cursor:pointer; padding:0; font-size:12px; }
+  @media (max-width: 520px) { nav { padding:0 16px; } .nav-tag { display:none; } }
   .container { max-width:900px; margin:0 auto; padding:28px 18px 36px; }
   .card {
     background:linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.86));
@@ -144,7 +155,12 @@
 
 <nav>
   <div class="nav-brand">LegalAI <span>Resolver</span></div>
-  <div class="nav-tag">Respondent Portal</div>
+  <div class="nav-right">
+    <select id="langSelect" class="lang-select" aria-label="Language" onchange="changeLanguage(this.value)" data-no-i18n>
+      <option value="en">English</option>
+    </select>
+    <div class="nav-tag">Respondent Portal</div>
+  </div>
 </nav>
 
 <!-- SCREEN: Loading -->
@@ -257,6 +273,7 @@ window.onload = async () => {
       );
       caseData        = r.data;
       respondentEmail = (r.data.case && r.data.case.respondent_email) || '';
+      await initLanguage();
       renderCase();
       showScreen('screenCase');
       return;
@@ -292,10 +309,17 @@ async function verifyEmail() {
 
 // ── Render case ───────────────────────────────────────────────
 function renderCase() {
-  const c  = caseData.case        || {};
-  const ds = caseData.dispute_summary || {};
-  const ls = caseData.legal_summary   || {};
-  const ng = caseData.negotiation     || {};
+  const c  = { ...(caseData.case || {}) };
+  const ds = { ...(caseData.dispute_summary || {}) };
+  const ls = { ...(caseData.legal_summary || {}) };
+  const ng = caseData.negotiation ? { ...caseData.negotiation } : {};
+  const T  = (translated && !showOriginal) ? translated.fields : null;
+  if (T) {
+    c.dispute_text         = T.dispute_text || c.dispute_text;
+    ds.key_issues          = T.key_issues || ds.key_issues;
+    ls.respondent_defenses = T.respondent_defenses || ls.respondent_defenses;
+    if (T.ai_reasoning && ng.ai_reasoning) ng.ai_reasoning = T.ai_reasoning;
+  }
 
   // Case summary
   document.getElementById('caseSummaryContent').innerHTML = `
@@ -314,7 +338,7 @@ function renderCase() {
     <div class="kv-row">
       <span class="kv-key">Claim Amount</span>
       <span class="kv-val" style="color:var(--red);">
-        ${ds.claim_amount ? 'Rs. ' + Number(ds.claim_amount).toLocaleString('en-IN') : 'Non-monetary'}
+        ${ds.claim_amount ? fmtMoney(ds.claim_amount) : 'Non-monetary'}
       </span>
     </div>
     <div class="kv-row" style="border:none;">
@@ -327,6 +351,7 @@ function renderCase() {
                   font-size:13px;line-height:1.6;margin-top:6px;">
         ${c.dispute_text || ''}
       </div>
+      ${translationNote()}
     </div>
     ${(ds.key_issues||[]).length > 0 ? `
       <div style="margin-top:12px;">
@@ -334,6 +359,12 @@ function renderCase() {
         ${ds.key_issues.map(i => `<div style="font-size:13px;padding:3px 0;color:var(--dark);">• ${i}</div>`).join('')}
       </div>
     ` : ''}
+    ${caseData.phone_updates?.has_phone ? `
+      <label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--dark);text-transform:none;font-weight:400;letter-spacing:normal;">
+        <input type="checkbox" id="phoneUpdates" style="width:auto;" ${caseData.phone_updates.enabled ? 'checked' : ''}
+               onchange="setPhoneUpdates(this.checked)">
+        Send me updates on WhatsApp/SMS (${caseData.phone_updates.number})
+      </label>` : ''}
   `;
 
   // Legal context
@@ -401,11 +432,18 @@ function renderActionPanel(ng, c) {
           This case has been ${status.toLowerCase().replace('_',' ')}.
         </div>
         ${c.settlement_url ? `<a class="btn btn-green btn-full" href="${c.settlement_url}" target="_blank" rel="noopener noreferrer">Download Settlement Agreement</a>` : ''}
-        ${c.payment && c.payment.status !== 'paid' ? `
+        ${c.payment && c.payment.status === 'defaulted' ? `<p style="margin-top:12px;color:var(--red);font-weight:700;">A payment was missed by more than 7 days. The full unpaid balance of ${fmtMoney(c.payment.balance_due || 0)} is now due.</p>` : ''}
+        ${c.payment && !['paid','defaulted'].includes(c.payment.status) ? `
           <div class="card" style="margin-top:14px;">
             <div class="card-title">Payment due</div>
-            <p style="font-size:15px;"><b>Rs. ${Number(c.payment.amount).toLocaleString('en-IN')}</b>
-              by <b>${(c.payment.due_at || '').slice(0, 10)}</b> — quote reference <b>${c.payment.reference}</b>.</p>
+            ${(c.payment.plan || []).length > 1
+              ? `<p style="font-size:15px;">${fmtMoney(c.payment.amount)} in ${c.payment.plan.length} instalments — quote reference <b>${c.payment.reference}</b>.</p>
+                 <table style="width:100%;font-size:14px;margin-top:8px;border-collapse:collapse;">${c.payment.plan.map(i => `
+                   <tr style="border-bottom:1px solid #E2E8F0;"><td style="padding:6px 0;">#${i.no}</td>
+                   <td>${fmtMoney(i.amount)}</td><td>${(i.due_at || '').slice(0, 10)}</td>
+                   <td>${i.status === 'paid' ? '<b style="color:var(--green);">Paid</b>' : (i.link_url ? `<a href="${i.link_url}" target="_blank" rel="noopener noreferrer">Pay</a>` : 'Due')}</td></tr>`).join('')}</table>`
+              : `<p style="font-size:15px;"><b>${fmtMoney(c.payment.amount)}</b>
+              by <b>${(c.payment.due_at || '').slice(0, 10)}</b> — quote reference <b>${c.payment.reference}</b>.</p>`}
             ${c.payment.link_url
               ? `<a class="btn btn-primary btn-full" style="margin-top:10px;" href="${c.payment.link_url}" target="_blank" rel="noopener noreferrer">Pay now</a>`
               : `<div style="font-size:14px;line-height:1.7;margin-top:8px;">
@@ -447,7 +485,7 @@ function renderActionPanel(ng, c) {
         <div class="proposal-box">
           <div class="proposal-label">Proposed Settlement</div>
           <div class="proposal-amount">
-            Rs. ${Number(ng.ai_proposed_amount||0).toLocaleString('en-IN')}
+            ${fmtMoney(ng.ai_proposed_amount||0)}
           </div>
         </div>
         ${ng.ai_reasoning ? `
@@ -471,6 +509,7 @@ function renderActionPanel(ng, c) {
             ${(ng.ai_reasoning_log || []).map(step => `<div style="font-size:13px;padding:3px 0;">• ${step}</div>`).join('') || '<div style="font-size:13px;color:var(--muted);">No detailed mediator log yet.</div>'}
           </div>
         ` : ''}
+        ${planChooser()}
         <div style="display:flex;gap:12px;margin-top:16px;">
           <button class="btn btn-green" style="flex:1;"
             onclick="submitDecision('ACCEPT')">
@@ -504,9 +543,10 @@ function renderActionPanel(ng, c) {
           </div>
           <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">
             Agree to pay the full claimed amount of
-            Rs. ${Number(c.claim_amount||0).toLocaleString('en-IN')}.
+            ${fmtMoney(c.claim_amount||0)}.
             This immediately resolves the dispute.
           </p>
+          ${planChooser()}
           <button class="btn btn-green" onclick="acceptInFull()">
             Accept Full Amount →
           </button>
@@ -520,7 +560,7 @@ function renderActionPanel(ng, c) {
             Enter the amount you are willing to pay. This is still Round ${ng.current_round || 1}, not a later round.
           </p>
           <div class="form-group">
-            <label>Your offer amount (Rs.)</label>
+            <label>Your offer amount (${currencyLabel()})</label>
             <input type="number" id="respondentOffer" placeholder="e.g. 20000">
           </div>
           <div class="form-group">
@@ -577,9 +617,10 @@ function renderActionPanel(ng, c) {
         </div>
         <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">
           Agree to pay the full claimed amount of
-          Rs. ${Number(c.claim_amount||0).toLocaleString('en-IN')}.
+          ${fmtMoney(c.claim_amount||0)}.
           This immediately resolves the dispute.
         </p>
+        ${planChooser()}
         <button class="btn btn-green" onclick="acceptInFull()">
           Accept Full Amount →
         </button>
@@ -595,7 +636,7 @@ function renderActionPanel(ng, c) {
           The AI Mediator will analyze both offers and propose a fair settlement.
         </p>
         <div class="form-group">
-          <label>Your offer amount (Rs.)</label>
+          <label>Your offer amount (${currencyLabel()})</label>
           <input type="number" id="respondentOffer" placeholder="e.g. 20000">
         </div>
         <div class="form-group">
@@ -658,7 +699,7 @@ function renderActionPanel(ng, c) {
 // ── Actions ───────────────────────────────────────────────────
 async function submitOffer() {
   const amt = document.getElementById('respondentOffer')?.value;
-  if (!amt) return alert('Enter your offer amount.');
+  if (!amt) return alert(LegalAIi18n.t('Enter your offer amount.'));
   const roundNum = caseData?.negotiation?.current_round || 1;
   const explanation = document.getElementById('respondentExplanation')?.value.trim() || '';
   const proofNote = document.getElementById('respondentProofNote')?.value.trim() || '';
@@ -693,11 +734,29 @@ async function submitOffer() {
   }
 }
 
+// Instalment choice (only when the claimant's policy allows plans).
+function planChooser() {
+  const opts = caseData?.payment_options || {};
+  const max = opts.max_installments || 1;
+  if (max < 2) return '';
+  const choices = Array.from({ length: max }, (_, i) => i + 1)
+    .map(n => `<option value="${n}">${n === 1 ? 'Pay in one go' : `${n} monthly instalments`}</option>`).join('');
+  return `<div class="form-group" style="margin:10px 0;">
+      <label>How would you like to pay?</label>
+      <select class="plan-choice" onchange="document.querySelectorAll('.plan-choice').forEach(s => s.value = this.value)">${choices}</select>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">Minimum ${fmtMoney(opts.min_installment_amount || 0)} per instalment. Missing one by more than 7 days makes the full balance due.</div>
+    </div>`;
+}
+function chosenInstallments() {
+  const el = document.querySelector('.plan-choice');
+  return el ? Number(el.value) : 1;
+}
+
 async function acceptInFull() {
-  if (!confirm('Are you sure you want to accept the full claimed amount?')) return;
+  if (!confirm(LegalAIi18n.t('Are you sure you want to accept the full claimed amount?'))) return;
   try {
     await axios.post(`${API}/api/respondent/accept-in-full`, {
-      case_id: caseId, email: respondentEmail, token: respondentToken
+      case_id: caseId, email: respondentEmail, token: respondentToken, installments: chosenInstallments()
     });
     showSuccess('Accepted', 'You have accepted the full amount. A settlement agreement will be generated and emailed to both parties.');
   } catch(e) {
@@ -709,6 +768,7 @@ async function submitDecision(decision) {
   try {
     const response = await axios.post(`${API}/api/respondent/proposal-response`, {
       case_id: caseId, email: respondentEmail, token: respondentToken, decision,
+      installments: decision === 'ACCEPT' ? chosenInstallments() : undefined,
       reason: decision === 'REJECT' ? prompt('Optional: why are you rejecting? Mention missing proof if relevant.') || '' : ''
     });
     if (response.data?.outcome === 'SETTLED' || response.data?.status === 'SETTLED') {
@@ -740,18 +800,98 @@ async function submitDecision(decision) {
   }
 }
 
+// ── Money (currency follows the case's jurisdiction) ───────
+function caseCurrency() {
+  const j = caseData?.jurisdiction || {};
+  return { code: caseData?.case?.currency || j.currency || 'INR', locale: j.locale || 'en-IN' };
+}
+function fmtMoney(v) {
+  const { code, locale } = caseCurrency();
+  const n = Number(v || 0);
+  if (code === 'INR') return 'Rs. ' + n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  try { return new Intl.NumberFormat(locale, { style: 'currency', currency: code, maximumFractionDigits: 2 }).format(n); }
+  catch (_) { return code + ' ' + n.toLocaleString(); }
+}
+function currencyLabel() { const c = caseCurrency().code; return c === 'INR' ? 'Rs.' : c; }
+
+// ── Language ────────────────────────────────────────────────
+let translated = null, showOriginal = false, translationUnavailable = false;
+
+async function initLanguage() {
+  const langs = caseData?.languages || {};
+  const sel = document.getElementById('langSelect');
+  sel.innerHTML = Object.entries(langs).map(([code, l]) =>
+    `<option value="${code}">${l.native}${l.native !== l.name ? ' · ' + l.name : ''}</option>`).join('') || '<option value="en">English</option>';
+  const fromUrl = new URLSearchParams(window.location.search).get('lang');
+  const lang = (fromUrl && langs[fromUrl]) ? fromUrl : (caseData?.language || 'en');
+  sel.value = lang;
+  LegalAIi18n.setLang(lang);
+  if (fromUrl && fromUrl !== caseData?.language) saveLanguage(lang);
+  await loadTranslation();
+}
+
+async function changeLanguage(lang) {
+  LegalAIi18n.setLang(lang);
+  saveLanguage(lang);
+  showOriginal = false;
+  await loadTranslation();
+  if (caseData) renderCase();
+}
+
+function saveLanguage(lang) {
+  if (!caseData) return;
+  axios.post(`${API}/api/respondent/language`, {
+    case_id: caseId, email: respondentEmail, token: respondentToken, language: lang
+  }).then(() => { caseData.language = lang; }).catch(() => {});
+}
+
+async function loadTranslation() {
+  translated = null; translationUnavailable = false;
+  const lang = LegalAIi18n.lang;
+  if (!caseData || lang === 'en') return;
+  if (!caseData.machine_translation) { translationUnavailable = true; return; }
+  try {
+    const r = await axios.get(`${API}/api/respondent/case/${caseId}/translation?lang=${lang}` +
+      `&email=${encodeURIComponent(respondentEmail)}&t=${encodeURIComponent(respondentToken)}`);
+    translated = r.data;
+  } catch (_) { translationUnavailable = true; }
+}
+
+function translationNote() {
+  if (LegalAIi18n.lang === 'en') return '';
+  if (translationUnavailable) return `<div class="mt-note">The claimant wrote this in English; automatic translation is not available.</div>`;
+  if (!translated) return '';
+  return `<div class="mt-note"><span>Machine translation — the English original is authoritative.</span>
+    <button type="button" onclick="toggleOriginal()">${showOriginal ? 'Show translation' : 'Show English original'}</button></div>`;
+}
+
+function toggleOriginal() { showOriginal = !showOriginal; renderCase(); }
+
+async function setPhoneUpdates(on) {
+  try {
+    await axios.post(`${API}/api/respondent/contact-preferences`, {
+      case_id: caseId, email: respondentEmail, token: respondentToken, phone_updates: on
+    });
+    caseData.phone_updates.enabled = on;
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Could not update your preference.');
+    document.getElementById('phoneUpdates').checked = !on;
+  }
+}
+
 async function refreshRespondentCase() {
   const r = await axios.get(
     `${API}/api/respondent/case/${caseId}?email=${encodeURIComponent(respondentEmail)}&t=${encodeURIComponent(respondentToken)}`
   );
   caseData = r.data;
+  await loadTranslation();
   renderCase();
   showScreen('screenCase');
 }
 
 async function disputeFacts() {
   const version = document.getElementById('respondentVersion')?.value.trim();
-  if (!version) return alert('Please describe your version of events.');
+  if (!version) return alert(LegalAIi18n.t('Please describe your version of events.'));
   try {
     await axios.post(`${API}/api/respondent/dispute-facts`, {
       case_id: caseId, email: respondentEmail, token: respondentToken, counter_claim: version
@@ -767,7 +907,7 @@ async function disputeFacts() {
 
 async function submitProofResponse(requestId, roundNumber) {
   const text = document.getElementById(`proofResponse_${requestId}`)?.value.trim();
-  if (!text) return alert('Please enter your proof response.');
+  if (!text) return alert(LegalAIi18n.t('Please enter your proof response.'));
   try {
     await axios.post(`${API}/api/respondent/proof-response`, {
       case_id: caseId,
@@ -807,7 +947,7 @@ async function uploadRespondentEvidence(file) {
 }
 
 async function decline() {
-  if (!confirm('Are you sure? Non-participation will be noted in the court file as evidence of bad faith.')) return;
+  if (!confirm(LegalAIi18n.t('Are you sure? Non-participation will be noted in the court file as evidence of bad faith.'))) return;
   try {
     await axios.post(`${API}/api/respondent/decline`, {
       case_id: caseId, email: respondentEmail, token: respondentToken

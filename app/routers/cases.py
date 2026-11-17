@@ -19,6 +19,9 @@ from app.services.blob_service import blob_service, refresh_case_urls
 from app.services.content_safety import content_safety_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.services import messaging
+from app.core.i18n import case_language
+from app.core.jurisdictions import money
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -66,6 +69,8 @@ async def submit_case(
 
     # 5. Create case
     case_data = body.model_dump()
+    from app.core.jurisdictions import JURISDICTIONS
+    case_data["currency"] = JURISDICTIONS[case_data["jurisdiction"]].currency
     case      = cosmos_service.create_case(case_data)
     case_id   = case["id"]
     logger.info(f"Case created | id={case_id} | email={body.claimant_email}")
@@ -141,7 +146,10 @@ def deliver_invite(case: dict) -> bool:
         case_id=case["id"],
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
     )
+    messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
     if not sent:
         return False
     cosmos_service.transition_case(case["id"], CaseStatus.INVITE_SENT)
@@ -306,8 +314,11 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
         case_id=case_id,
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
     )
-    if not sent:
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
 
     # Notify claimant that invite was dispatched
@@ -359,8 +370,11 @@ async def resend_invite(case_id: str, current_user: dict = Depends(get_current_u
         case_id=case_id,
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
     )
-    if not sent:
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
     logger.info(f"Invite resent | case_id={case_id}")
     return {"message": f"Invite link resent to {case['respondent_email']}"}
@@ -431,6 +445,7 @@ async def confirm_payment(
     case_id: str,
     honored: bool,
     background_tasks: BackgroundTasks,
+    installment: int | None = None,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -451,7 +466,11 @@ async def confirm_payment(
 
     if honored:
         from app.services import payments
-        payments.mark_paid(case_id, "claimant")
+        updated = payments.mark_paid(case_id, "claimant", installment_no=installment)
+        pay = updated.get("payment") or {}
+        if pay.get("status") != "paid":
+            return {"message": f"Payment recorded. {money(pay.get('amount', 0) - pay.get('paid_amount', 0), case)} "
+                               "remains under the instalment plan.", "outcome": "PARTIALLY_PAID"}
         return {"message": "Payment confirmed. Case fully resolved.", "outcome": "PAYMENT_RECEIVED"}
 
     background_tasks.add_task(in_thread(_generate_and_send_breach_notice), case_id)
@@ -485,7 +504,7 @@ async def _generate_and_send_breach_notice(case_id: str):
             headline="Breach of Settlement Notice Ready",
             summary=(
                 f"Your Breach of Settlement Notice has been generated for Case "
-                f"#{case_id[:8].upper()} (amount: Rs. {settled_amount:,.0f}). "
+                f"#{case_id[:8].upper()} (amount: {money(settled_amount, case)}). "
                 "This document is stronger than the original demand letter as it "
                 "references the executed settlement agreement. Send it to the respondent "
                 "immediately. If payment is still not received within 7 days, file it "
@@ -566,10 +585,10 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
             events.append({"timestamp": rs["submitted_at"], "event": f"ROUND_{rn}_RESPONDENT_OFFER", "label": f"Round {rn}: Respondent submitted offer"})
         if r.get("proposal_issued_at"):
             amt = r.get("ai_proposed_amount", 0) or 0
-            events.append({"timestamp": r["proposal_issued_at"], "event": f"ROUND_{rn}_PROPOSAL", "label": f"Round {rn}: AI proposal — Rs. {amt:,.0f}"})
+            events.append({"timestamp": r["proposal_issued_at"], "event": f"ROUND_{rn}_PROPOSAL", "label": f"Round {rn}: AI proposal — {money(amt, case)}"})
 
     if case["status"] == "SETTLED":
-        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — Rs. {(case.get('settled_amount') or 0):,.0f}"})
+        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — {money((case.get('settled_amount') or 0), case)}"})
     elif case["status"] in ("ESCALATED", "AUTO_ESCALATED"):
         events.append({"timestamp": case.get("escalated_at") or case["updated_at"], "event": "ESCALATED", "label": "Escalated — court file generated"})
 

@@ -14,6 +14,7 @@ from app.core.dependencies import get_current_user
 from app.models.case import CaseStatus
 from app.services.blob_service import refresh_case_urls
 from app.services.cosmos_service import cosmos_service
+from app.core.jurisdictions import money
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ async def approve_proposal(case_id: str, body: Approval, mediator: dict = Depend
             raise HTTPException(status_code=400, detail="A positive amount is required.")
         if ask is not None and offer is not None and offer < ask and not (offer <= amount <= ask):
             raise HTTPException(status_code=400,
-                                detail=f"The proposal must lie between the offers (Rs. {offer:,.0f} – Rs. {ask:,.0f}).")
+                                detail=f"The proposal must lie between the offers ({money(offer, case)} – {money(ask, case)}).")
     if len(reasoning) < 40:
         raise HTTPException(status_code=400, detail="Give the parties a reasoned explanation (at least 40 characters).")
 

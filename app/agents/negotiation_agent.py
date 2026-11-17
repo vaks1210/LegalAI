@@ -1,6 +1,8 @@
 import logging
 import re
 from app.services.openai_service import log_llm_fallback, openai_service
+from app.core.jurisdictions import localize_prompt
+from app.core.jurisdictions import money
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +312,7 @@ CASE OVERVIEW:
 - Track: {track}
 - Claimant: {case['claimant_name']} | {case['claimant_state']}
 - Respondent: {case['respondent_name']}
-- Original claim: Rs. {(case.get('claim_amount') or 0):,.0f}
+- Original claim: {money((case.get('claim_amount') or 0), case)}
 
 {zopa_context}
 
@@ -334,7 +336,7 @@ MANDATORY INSTRUCTIONS FOR THIS ROUND:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=True,
             temperature=0.2,
@@ -512,7 +514,7 @@ def _build_party_statements(case: dict, negotiation: dict, round_number: int) ->
         counter = case.get("respondent_counter_amount")
         lines.append(
             f"- Respondent's version of events: {_clip(case['respondent_version'])}"
-            + (f" (counter-claim Rs. {counter:,.0f})" if counter else "")
+            + (f" (counter-claim {money(counter, case)})" if counter else "")
         )
     for pr in negotiation.get("proof_requests", []):
         if pr.get("round_number", round_number) > round_number:
@@ -571,13 +573,13 @@ def _build_offer_context(
 
     return (
         f"CURRENT ROUND OFFERS:\n"
-        f"- Claimant is asking: Rs. {cl:,.0f}"
-        f"  (Rs. {abs(cl_vs_optimal):,.0f} {'above' if cl_vs_optimal > 0 else 'below'} fair value)\n"
-        f"- Respondent is offering: Rs. {rs:,.0f}"
-        f"  (Rs. {abs(rs_vs_optimal):,.0f} {'below' if rs_vs_optimal > 0 else 'above'} fair value)\n"
-        f"- Gap: Rs. {gap:,.0f} ({gap_pct:.0f}% of original claim)\n"
+        f"- Claimant is asking: {money(cl, case)}"
+        f"  ({money(abs(cl_vs_optimal), case)} {'above' if cl_vs_optimal > 0 else 'below'} fair value)\n"
+        f"- Respondent is offering: {money(rs, case)}"
+        f"  ({money(abs(rs_vs_optimal), case)} {'below' if rs_vs_optimal > 0 else 'above'} fair value)\n"
+        f"- Gap: {money(gap, case)} ({gap_pct:.0f}% of original claim)\n"
         f"- Gap assessment: {assessment}\n"
-        f"- Your proposed_amount should aim to split this gap fairly, anchored at Rs. {zopa_optimal:,.0f}"
+        f"- Your proposed_amount should aim to split this gap fairly, anchored at {money(zopa_optimal, case)}"
     )
 
 
@@ -669,9 +671,9 @@ def _post_process(
     # Ensure reasoning_breakdown exists for monetary tracks
     if track != "non_monetary":
         result.setdefault("reasoning_breakdown", {
-            "amount_logic": f"The proposal of Rs. {(result.get('proposed_amount') or 0):,.0f} reflects the evidence strength and legal position of both parties.",
+            "amount_logic": f"The proposal of {money((result.get('proposed_amount') or 0), case)} reflects the evidence strength and legal position of both parties.",
             "evidence_weight": "Documentation quality was factored into the settlement range.",
-            "court_comparison": f"Litigation could cost Rs. {(analytics.get('court_cost_estimate') or 75000):,.0f} and take {analytics.get('time_to_resolution_months', 30)} months.",
+            "court_comparison": f"Litigation could cost {money((analytics.get('court_cost_estimate') or 75000), case)} and take {analytics.get('time_to_resolution_months', 30)} months.",
             "claimant_risk": "Rejecting may delay recovery and incur litigation costs.",
             "respondent_risk": "Rejecting may increase exposure through court proceedings and interest accrual.",
         })
@@ -679,8 +681,8 @@ def _post_process(
     # Ensure live_reasoning_log exists
     result.setdefault("live_reasoning_log", [
         f"Round {round_number}: Reviewed ZOPA and parties' current positions.",
-        f"ZOPA optimal: Rs. {(analytics.get('zopa_optimal') or 0):,.0f}",
-        f"Proposed amount: Rs. {(result.get('proposed_amount') or 0):,.0f} — within ZOPA bounds.",
+        f"ZOPA optimal: {money((analytics.get('zopa_optimal') or 0), case)}",
+        f"Proposed amount: {money((result.get('proposed_amount') or 0), case)} — within ZOPA bounds.",
     ])
 
     result["round_number"] = round_number
@@ -694,9 +696,9 @@ def _fallback_reasoning(case: dict, round_number: int, amount: float, analytics:
     time_months = analytics.get("time_to_resolution_months", 30) or 30
     return (
         f"Based on the facts, applicable Indian law, and both parties' positions in Round {round_number}, "
-        f"the AI Mediator proposes a settlement of Rs. {amount:,.0f}. "
+        f"the AI Mediator proposes a settlement of {money(amount, case)}. "
         f"This reflects a balanced assessment of the legal merits and evidence strength. "
-        f"Pursuing this matter through court would cost approximately Rs. {court_cost:,.0f} "
+        f"Pursuing this matter through court would cost approximately {money(court_cost, case)} "
         f"and take {time_months} months — settlement today avoids that outcome entirely."
     )
 
@@ -770,8 +772,8 @@ def _fallback_proposal(
 
     if zopa_opt and midpoint:
         raw = weight * zopa_opt + (1 - weight) * midpoint
-        logic = (f"{int(weight * 100)}% fair-value anchor (Rs. {zopa_opt:,.0f}) and "
-                 f"{int((1 - weight) * 100)}% the parties' midpoint (Rs. {midpoint:,.0f})")
+        logic = (f"{int(weight * 100)}% fair-value anchor ({money(zopa_opt, case)}) and "
+                 f"{int((1 - weight) * 100)}% the parties' midpoint ({money(midpoint, case)})")
     else:
         raw = zopa_opt or midpoint or 0
         logic = "the available reference point"
@@ -781,10 +783,10 @@ def _fallback_proposal(
     # Shown to BOTH parties: must not reveal the fair-value anchor (ZOPA) or
     # the weighting, from which the anchor could be back-calculated.
     reasoning = (
-        f"In Round {round_number} the claimant asks Rs. {cl:,.0f} and the respondent offers "
-        f"Rs. {rs:,.0f} (gap Rs. {gap:,.0f}). The mediator proposes Rs. {proposed:,.0f}, reflecting the "
+        f"In Round {round_number} the claimant asks {money(cl, case)} and the respondent offers "
+        f"{money(rs, case)} (gap {money(gap, case)}). The mediator proposes {money(proposed, case)}, reflecting the "
         f"legal merits and evidence assessed for this case and the movement both sides have made. "
-        f"The figure stays between both positions. Litigation would cost about Rs. {court_cost:,.0f} "
+        f"The figure stays between both positions. Litigation would cost about {money(court_cost, case)} "
         f"and take roughly {months} months — settling now avoids both."
     )
     return {
@@ -793,14 +795,14 @@ def _fallback_proposal(
         "reasoning_breakdown": {
             "amount_logic":     f"Rule-based: {logic}, kept within the parties' offers.",
             "evidence_weight":  "Evidence strength is reflected in the fair-value anchor from case analytics.",
-            "court_comparison": f"Court would cost Rs. {court_cost:,.0f} and take {months} months.",
+            "court_comparison": f"Court would cost {money(court_cost, case)} and take {months} months.",
             "claimant_risk":    "Recovery delay and litigation costs if the dispute escalates.",
             "respondent_risk":  "Higher exposure through court proceedings, interest and costs.",
         },
         "live_reasoning_log": [
-            f"Offers: claimant Rs. {cl:,.0f}, respondent Rs. {rs:,.0f}.",
+            f"Offers: claimant {money(cl, case)}, respondent {money(rs, case)}.",
             f"Anchor weight for round {round_number}: {int(weight * 100)}%.",
-            f"Proposal: Rs. {proposed:,.0f} (between both offers).",
+            f"Proposal: {money(proposed, case)} (between both offers).",
             "Rule-based mediator (no AI model configured).",
         ],
         "claimant_pressure":   "This is close to what a court would likely award after costs and delay.",
