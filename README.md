@@ -183,7 +183,7 @@ own name, tracks recovery, and integrates with its own systems.
 | | |
 |---|---|
 | **Business console** | `/business` — overview (claimed vs settled, settlement rate, days to settle, plan usage), cases, bulk upload, team, settings, developer tools |
-| **Bulk filing** | CSV or JSON, up to 500 rows. Required: `respondent_name`, `respondent_email`, `reference` (your invoice/loan/agreement no.). Optional: `claim_amount`, `incident_date`, `due_date`, `respondent_phone`, `evidence`, `details`, `dispute_text`. Idempotent on `reference`; per-row error report |
+| **Bulk filing** | CSV or JSON, up to 500 rows. Required: `respondent_name`, `respondent_email`, `reference` (your invoice/loan/agreement no.). Optional: `claim_amount`, `incident_date`, `due_date`, `respondent_phone`, `language`, `jurisdiction`, `evidence`, `details`, `dispute_text`. Idempotent on `reference`; per-row error report |
 | **Templates** | Built-in: overdue invoice, unpaid rent, loan default, dishonoured cheque — plus your own (`PUT /api/orgs/{id}/templates/{key}`) |
 | **Team** | Owner / admin / agent roles; agents work cases through the normal case workspace |
 | **API keys** | `X-API-Key: lai_...` — file and track cases from your billing or loan system (keys can't administer the org) |
@@ -192,6 +192,10 @@ own name, tracks recovery, and integrates with its own systems.
 | **Mediator review** | Optional: a human mediator (`/mediator`) approves or edits each AI proposal before the parties see it; named in the agreement. Unreviewed drafts are released after the SLA, flagged |
 | **Evidence** | Each acceptance records who/how/when/IP and a fingerprint of the exact terms; agreements carry a Record of Acceptance and can be verified with `POST /api/documents/verify` |
 | **Plans** | Monthly case limits: free 25 · starter 500 · growth 5000 · enterprise unlimited |
+| **Instalment plans** | Set a policy (max instalments, minimum per instalment); respondents choose a plan when accepting. Per-instalment links, reminders 3 days before each due date, default after 7 days' grace (full balance due, breach notice, `case.payment_defaulted` webhook). The agreement prints the schedule |
+| **WhatsApp & SMS** | Invites, deadline nudges (3 days and 1 day before), proposals and payment reminders also go to the respondent's phone: Meta WhatsApp Cloud API first, Twilio SMS as fallback. Every notice is logged; an auto-escalated court file includes a dated "Service of Notice" record. Respondents can opt out |
+| **Languages** | Respondent notices and portal in English, Hindi, Bengali, Marathi, Tamil, Telugu, Spanish and Arabic (RTL); `language` column per row. With an LLM, the claimant's narrative is machine-translated (English original authoritative) |
+| **Jurisdictions** | India, England & Wales, Singapore, UAE, United States: currency, courts and tribunals by claim size, statutes, notice periods, governing-law and e-signature clauses, and an LLM override so foreign cases never cite Indian law. Org default plus `jurisdiction` column per row |
 
 ```bash
 curl -X POST https://YOUR_HOST/api/orgs/ORG_ID/cases/bulk \
@@ -203,6 +207,10 @@ curl -X POST https://YOUR_HOST/api/orgs/ORG_ID/cases/bulk \
 ```
 
 ---
+
+> **Before launch:** the non-English translations and the non-Indian jurisdiction packs were prepared without
+> native-speaker or local-counsel review. Have them reviewed. WhatsApp needs an approved utility template
+> (`legalai_update`, two body variables: message and link), and Indian SMS senders must be DLT-registered.
 
 ## ⚡ Quick Start (no cloud account needed)
 
