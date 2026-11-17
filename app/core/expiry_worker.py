@@ -1,3 +1,4 @@
+import html
 import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,70 @@ async def run_expiry_check():
 
     for case in expired:
         await _handle_expired_case(case)
+
+    expired_ids = {c["id"] for c in expired}
+    for case in cases:
+        if case["id"] not in expired_ids:
+            try:
+                send_respondent_nudge(case)
+            except Exception:
+                logger.exception(f"Nudge failed | case_id={case['id']}")
+
+
+# States where the case is waiting on the respondent, and the label used in
+# the reminder. A nudge goes out NUDGE_DAYS before the deadline, once each.
+RESPONDENT_ACTION_STATES = {
+    CaseStatus.INVITE_SENT.value:            "respond to the dispute",
+    CaseStatus.RESPONDENT_VIEWED.value:      "submit your response",
+    CaseStatus.WAITING_FOR_RESPONDENT.value: "submit your offer",
+}
+NUDGE_DAYS = (3, 1)
+
+
+def send_respondent_nudge(case: dict, now: datetime | None = None) -> str | None:
+    """Remind a respondent (email + WhatsApp/SMS) before their window closes."""
+    action = RESPONDENT_ACTION_STATES.get(case.get("status"))
+    deadline = case.get("current_deadline")
+    if not action or not deadline:
+        return None
+    now = now or datetime.now(timezone.utc)
+    due = datetime.fromisoformat(deadline)
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    left = due - now
+    if left.total_seconds() <= 0:
+        return None
+    window = next((d for d in sorted(NUDGE_DAYS) if left <= timedelta(days=d)), None)
+    if window is None:
+        return None
+    key = f"{case['status']}:{deadline}:{window}d"
+    claimed = {}
+
+    def claim(c):
+        sent = c.setdefault("nudges_sent", [])
+        if key in sent:
+            return
+        sent.append(key)
+        del sent[:-20]
+        claimed["ok"] = True
+    case = cosmos_service._mutate_case(case["id"], claim)
+    if not claimed:
+        return None
+
+    from app.core.security import respondent_portal_url
+    from app.services.email_service import email_service
+    from app.services import messaging
+    email_service.send_case_update(
+        to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case["id"],
+        headline=f"Reminder: please {action} by {due.strftime('%d %b %Y')}",
+        summary=(f"{case['claimant_name']}'s dispute with you is waiting for you to {action}. "
+                 f"The window closes on {due.strftime('%d %B %Y')}. If you do not take part, the claimant "
+                 "may take the matter to court with a record of your non-response."),
+        portal_url=respondent_portal_url(case), action_label="Open case",
+    )
+    messaging.messaging_service.notify_respondent(case, "nudge", messaging.nudge_text(case, due))
+    logger.info(f"Respondent nudged | case_id={case['id']} | window={window}d")
+    return key
 
 
 async def _handle_expired_case(case: dict):
@@ -58,7 +123,20 @@ async def _handle_expired_case(case: dict):
             await _expire_proposal_issued(case_id, case)
 
         elif status == CaseStatus.SETTLING.value:
-            await _expire_settling(case_id, case)
+            # SETTLING is a transient step inside the settlement handler; if
+            # it expires the handler was interrupted — finish the settlement.
+            # (It previously issued a payment-breach notice here.)
+            from app.routers.negotiation import _handle_settlement
+            await _handle_settlement(case_id)
+
+        elif status == CaseStatus.ANALYZING.value:
+            await _resume_analysis(case_id, case)
+
+        elif status == CaseStatus.MEDIATOR_REVIEW.value:
+            await _resume_mediation(case_id, case)
+
+        elif status == CaseStatus.ESCALATING.value:
+            await _resume_escalation(case_id)
 
     except Exception as e:
         logger.error(f"Expiry handler failed | case_id={case_id} | status={status} | error={e}")
@@ -67,6 +145,70 @@ async def _handle_expired_case(case: dict):
 # ══════════════════════════════════════════════════════════════
 # EXPIRY HANDLERS PER STATE
 # ══════════════════════════════════════════════════════════════
+
+async def _resume_analysis(case_id: str, case: dict):
+    """Analysis was interrupted (e.g. server restart) — run it again."""
+    logger.warning(f"Resuming interrupted analysis | case_id={case_id}")
+    from app.routers.cases import _run_full_pipeline, analyse_new_case
+    if not case.get("track"):          # bulk-filed case interrupted before routing
+        await analyse_new_case(case_id)
+    else:
+        await _run_full_pipeline(case_id)
+
+
+async def _resume_mediation(case_id: str, case: dict):
+    """Mediation was interrupted after both offers arrived — run it again."""
+    neg = cosmos_service.get_negotiation_by_case(case_id)
+    if not neg:
+        return
+    round_number = case.get("current_round", 1)
+    rnd = cosmos_service.get_round(neg["id"], round_number) or {}
+    draft = rnd.get("draft_proposal")
+    if draft and not rnd.get("proposal_issued_at"):
+        # Mediator review SLA passed: release the AI draft (flagged) rather
+        # than leave both parties waiting indefinitely.
+        logger.warning(f"Mediator review SLA passed — releasing draft | case_id={case_id}")
+        from app.routers.negotiation import issue_proposal
+        issue_proposal(case_id, round_number, draft.get("amount"), draft.get("actions"), draft.get("reasoning"),
+                       review={"released_without_review": True,
+                               "released_at": datetime.now(timezone.utc).isoformat()})
+        return
+    logger.warning(f"Resuming interrupted mediation | case_id={case_id}")
+    from app.routers.negotiation import _run_mediation
+    await _run_mediation(case_id, neg["id"], round_number)
+
+
+async def _resume_escalation(case_id: str):
+    """Escalation was interrupted — finish it."""
+    logger.warning(f"Completing interrupted escalation | case_id={case_id}")
+    cosmos_service.transition_case(case_id, CaseStatus.ESCALATED, {
+        "escalated_at": datetime.now(timezone.utc).isoformat(),
+        "action_required_by": None,
+    })
+
+
+async def _refresh_court_file(case_id: str) -> str:
+    """
+    Rebuild the court file after auto-escalation so it carries the dated
+    service-of-notice record (email, portal views, WhatsApp/SMS notices).
+    Falls back to the file generated at analysis time.
+    """
+    case = cosmos_service.get_case(case_id)
+    docs = case.get("documents_data") or {}
+    try:
+        from app.agents.document_agent import _generate_court_file
+        from app.services.blob_service import blob_service
+        pdf = await _generate_court_file(case, case.get("intake_data") or {}, case.get("legal_data") or {},
+                                         case.get("analytics_data") or {})
+        name = f"court_file_escalated_{case_id}.pdf"
+        blob_service.upload("pdfs", name, pdf)
+        url = blob_service.generate_download_url("pdfs", name)
+        cosmos_service.update_case(case_id, {"documents_data": {**docs, "court_file_url": url}})
+        return url
+    except Exception:
+        logger.exception(f"Court file refresh failed | case_id={case_id}")
+        return docs.get("court_file_url", "")
+
 
 async def _expire_analyzed(case_id: str):
     """
@@ -93,8 +235,7 @@ async def _expire_invite_sent(case_id: str, case: dict):
         )
     })
 
-    docs_data = case.get("documents_data") or {}
-    court_url = docs_data.get("court_file_url", "")
+    court_url = await _refresh_court_file(case_id)
 
     from app.services.email_service import email_service
     email_service.send(
@@ -103,9 +244,9 @@ async def _expire_invite_sent(case_id: str, case: dict):
         html_body=f"""
         <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
             <h3 style="color:#D97706;">LegalAI Resolver — Case Update</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
+            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
             <p style="color:#E2E8F0;">
-                <b>{case['respondent_name']}</b> did not respond to the mediation
+                <b>{html.escape(case['respondent_name'])}</b> did not respond to the mediation
                 invite within 7 days. Your case has been automatically escalated.
             </p>
             <p style="color:#E2E8F0;">
@@ -130,8 +271,7 @@ async def _expire_respondent_viewed(case_id: str, case: dict):
         )
     })
 
-    docs_data = case.get("documents_data") or {}
-    court_url = docs_data.get("court_file_url", "")
+    court_url = await _refresh_court_file(case_id)
 
     from app.services.email_service import email_service
     email_service.send(
@@ -140,9 +280,9 @@ async def _expire_respondent_viewed(case_id: str, case: dict):
         html_body=f"""
         <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
             <h3 style="color:#D97706;">LegalAI Resolver — Case Update</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
+            <p style="color:#E2E8F0;">Dear {html.escape(case['claimant_name'])},</p>
             <p style="color:#E2E8F0;">
-                <b>{case['respondent_name']}</b> viewed your case but did not
+                <b>{html.escape(case['respondent_name'])}</b> viewed your case but did not
                 submit a response within 5 days. Your case has been escalated.
                 Their deliberate non-engagement is documented in the court file.
             </p>
@@ -168,6 +308,14 @@ async def _expire_round_pending(case_id: str, case: dict):
     current_round = cosmos_service.get_round(neg["id"], round_number)
 
     if not current_round:
+        return
+
+    # WAITING_FOR_* is also the status while one party has decided on an
+    # issued proposal and the other hasn't. That is the decision phase, not
+    # the offer phase: time it out like an unanswered proposal. (Re-running
+    # mediation here changed nothing and left the case waiting forever.)
+    if current_round.get("proposal_issued_at"):
+        await _expire_proposal_issued(case_id, case)
         return
 
     claimant_submitted = bool((current_round.get("claimant") or {}).get("submitted_at"))
@@ -228,56 +376,6 @@ async def _expire_proposal_issued(case_id: str, case: dict):
         await _start_next_round(case_id, round_number + 1)
 
 
-async def _expire_settling(case_id: str, case: dict):
-    """
-    SETTLING expired (14 days) — payment deadline passed.
-    Auto-generate breach notice and notify claimant.
-    """
-    settled_amount = case.get("settled_amount", 0) or 0
-
-    cosmos_service.update_case(case_id, {
-        "settlement_honored":   False,
-        "payment_overdue":      True,
-        "payment_overdue_at":   datetime.now(timezone.utc).isoformat(),
-    })
-
-    # Generate breach notice
-    from app.agents.document_agent import generate_breach_notice
-    try:
-        breach_url = await generate_breach_notice(case)
-        cosmos_service.update_case(case_id, {
-            "breach_notice_sent": True,
-            "breach_notice_url":  breach_url,
-        })
-    except Exception as e:
-        logger.error(f"Auto breach notice failed | case_id={case_id} | error={e}")
-        breach_url = None
-
-    from app.services.email_service import email_service
-    email_service.send(
-        to_email=case["claimant_email"],
-        subject=f"Payment Deadline Passed — Breach Notice Ready — #{case_id[:8].upper()}",
-        html_body=f"""
-        <div style="font-family:Arial;background:#0F2A4A;padding:24px;border-radius:8px;">
-            <h3 style="color:#DC2626;">Payment Deadline Passed</h3>
-            <p style="color:#E2E8F0;">Dear {case['claimant_name']},</p>
-            <p style="color:#E2E8F0;">
-                The payment deadline of 14 days has passed.
-                <b>{case['respondent_name']}</b> has not made the agreed payment
-                of <b>Rs. {settled_amount:,.0f}</b>.
-            </p>
-            <p style="color:#E2E8F0;">
-                A Breach of Settlement Notice has been automatically generated.
-                This document is stronger than a demand letter as it references
-                the signed settlement agreement.
-            </p>
-            {'<a href="' + breach_url + '" style="display:block;background:#DC2626;color:#fff;text-align:center;padding:12px;border-radius:6px;text-decoration:none;font-weight:bold;margin-top:16px;">Download Breach Notice</a>' if breach_url else ''}
-        </div>
-        """,
-    )
-    logger.info(f"Payment deadline expired | case_id={case_id} | amount={settled_amount}")
-
-
 # ══════════════════════════════════════════════════════════════
 # STARTUP INTEGRATION
 # ══════════════════════════════════════════════════════════════
@@ -290,7 +388,10 @@ async def start_expiry_worker():
     logger.info("Expiry worker starting — runs every 60 minutes")
     while True:
         try:
-            await run_expiry_check()
+            # Blocking DB/PDF/email work — keep it off the request event loop.
+            await asyncio.to_thread(lambda: asyncio.run(run_expiry_check()))
+            from app.services.payments import check_payment_schedules
+            await asyncio.to_thread(check_payment_schedules)
         except Exception as e:
             logger.error(f"Expiry worker error: {e}")
         await asyncio.sleep(3600)

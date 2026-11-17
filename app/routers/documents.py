@@ -1,25 +1,33 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 import io
+from app.core.access import is_claimant_side, require_claimant_side, require_party
 from app.core.dependencies import get_current_user
 from app.core.exceptions import CaseNotFound, UnauthorizedAccess
 from app.services.cosmos_service import cosmos_service
-from app.services.blob_service import blob_service
+from app.services.blob_service import blob_service, refresh_case_urls
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _get_case_and_verify(case_id: str, user_email: str) -> dict:
-    """Fetch case and verify user is claimant or respondent."""
+# Documents built from the claimant's private analysis (the court file embeds
+# win probability / settlement range; the FIR advisory is the claimant's).
+CLAIMANT_ONLY = {"court_file", "fir_advisory"}
+
+
+def _require_claimant(case: dict, user: dict) -> None:
+    require_claimant_side(case, user)
+
+
+def _get_case_and_verify(case_id: str, user: dict) -> dict:
+    """Fetch case and verify user is on the claimant side or is the respondent."""
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"] != user_email and
-            case["respondent_email"] != user_email):
-        raise UnauthorizedAccess()
-    return case
+    require_party(case, user)
+    return refresh_case_urls(case)
 
 
 @router.get("/{case_id}/demand-letter")
@@ -28,7 +36,7 @@ async def get_demand_letter(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for demand letter PDF."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
 
     docs_data = case.get("documents_data", {})
     url       = docs_data.get("demand_letter_url")
@@ -47,7 +55,8 @@ async def get_court_file(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for court-ready case file."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
+    _require_claimant(case, current_user)
 
     docs_data = case.get("documents_data", {})
     url       = docs_data.get("court_file_url")
@@ -66,7 +75,7 @@ async def get_settlement(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for settlement agreement."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
 
     if case["status"] != "SETTLED":
         raise HTTPException(
@@ -77,6 +86,16 @@ async def get_settlement(
     url = case.get("settlement_url") or (
         case.get("documents_data") or {}
     ).get("settlement_url")
+
+    if not url:
+        # Agreement PDF failed at settlement time — generate it now.
+        try:
+            from app.agents.document_agent import generate_settlement_agreement
+            url = await generate_settlement_agreement(case, case.get("settled_amount") or 0)
+            cosmos_service.update_case(case_id, {"settlement_url": url, "settlement_pdf_error": None})
+        except Exception:
+            logger.exception(f"On-demand settlement PDF failed | case_id={case_id}")
+            url = None
 
     if not url:
         raise HTTPException(
@@ -92,7 +111,8 @@ async def get_fir_advisory(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for FIR advisory (criminal track only)."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
+    _require_claimant(case, current_user)
 
     if case.get("track") != "criminal":
         raise HTTPException(
@@ -114,7 +134,7 @@ async def get_mediation_certificate(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for mediation certificate."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
 
     docs_data = case.get("documents_data", {})
     url       = docs_data.get("mediation_certificate_url")
@@ -133,7 +153,7 @@ async def get_breach_notice(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns SAS download URL for breach of settlement notice."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
 
     url = case.get("breach_notice_url")
     if not url:
@@ -150,21 +170,50 @@ async def get_all_documents(
     current_user: dict = Depends(get_current_user),
 ):
     """Returns all available document URLs for a case."""
-    case = _get_case_and_verify(case_id, current_user["email"])
+    case = _get_case_and_verify(case_id, current_user)
 
     docs_data = case.get("documents_data") or {}
     records   = cosmos_service.get_documents_by_case(case_id)
 
+    is_claimant = is_claimant_side(case, current_user)
+    documents = {
+        "demand_letter":         docs_data.get("demand_letter_url"),
+        "court_file":            docs_data.get("court_file_url"),
+        "fir_advisory":          docs_data.get("fir_advisory_url"),
+        "settlement_agreement":  case.get("settlement_url"),
+        "mediation_certificate": docs_data.get("mediation_certificate_url"),
+        "breach_notice":         case.get("breach_notice_url"),
+    }
+    if not is_claimant:
+        documents = {k: v for k, v in documents.items() if k not in CLAIMANT_ONLY}
+        records = [r for r in records if r.get("doc_type") not in CLAIMANT_ONLY]
     return {
-        "case_id":   case_id,
-        "status":    case["status"],
-        "documents": {
-            "demand_letter":         docs_data.get("demand_letter_url"),
-            "court_file":            docs_data.get("court_file_url"),
-            "fir_advisory":          docs_data.get("fir_advisory_url"),
-            "settlement_agreement":  case.get("settlement_url"),
-            "mediation_certificate": docs_data.get("mediation_certificate_url"),
-            "breach_notice":         case.get("breach_notice_url"),
-        },
+        "case_id":          case_id,
+        "status":           case["status"],
+        "documents":        documents,
         "document_records": records,
+    }
+
+@router.post("/verify")
+async def verify_settlement_agreement(file: UploadFile = File(...)):
+    """
+    Public: check that a settlement agreement PDF is an unaltered copy of
+    one issued by the platform. Reveals only the case reference and dates.
+    """
+    import hashlib
+    data = await file.read(20 * 1024 * 1024 + 1)
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large.")
+    digest = hashlib.sha256(data).hexdigest()
+    case = cosmos_service.find_case_by_settlement_hash(digest)
+    if not case:
+        return {"valid": False, "sha256": digest,
+                "message": "This file does not match any agreement issued by LegalAI Resolver. "
+                           "It may have been altered, or it is not a LegalAI settlement agreement."}
+    return {
+        "valid": True, "sha256": digest,
+        "case_reference": case["id"][:8].upper(),
+        "issued_at": case.get("settlement_generated_at"),
+        "settled_at": case.get("settled_at"),
+        "message": "This is an unaltered copy of a settlement agreement issued by LegalAI Resolver.",
     }

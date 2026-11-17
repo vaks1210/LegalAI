@@ -1,6 +1,8 @@
 import logging
 from datetime import datetime, timezone
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
+from app.core.coerce import to_number
+from app.core.jurisdictions import localize_prompt
 from app.core.legal_reference import (
     get_consumer_forum_tier,
     get_rent_control_act,
@@ -25,10 +27,10 @@ PRIMARY STATUTES FOR MONETARY CIVIL DISPUTES:
 - Code of Civil Procedure 1908: Order 37 (summary suits for money recovery)
 - Consumer Protection Act 2019: S.2(7) (consumer definition), S.35 (complaints)
 - Negotiable Instruments Act 1881: S.138 (cheque dishonour — criminal), S.141 (company liability)
-- Payment of Wages Act 1936: S.3 (responsibility for payment), S.15 (claims authority)
+- Code on Wages 2019 (in force 21 Nov 2025; replaced the Payment of Wages Act 1936 — earlier S.3 liability, S.15 claims)
 - State Rent Control Acts: apply state-specific act based on jurisdiction_state
 - Interest: 18% per annum is standard for commercial transactions; 12% for consumer disputes
-- IPC S.420: Cheating — applicable when fraudulent intent is present alongside civil breach
+- BNS 2023 S.318 (cheating; earlier IPC S.420) — only when fraudulent intent existed from the start, alongside the civil breach
 
 PRECEDENT GUIDANCE — cite only real, verifiable Indian court decisions:
 - Refer to Supreme Court and relevant High Court judgments
@@ -106,13 +108,27 @@ EMPLOYMENT_PROMPT = """
 You are a senior Indian labour law advocate with deep expertise in employment disputes.
 Analyze the dispute and produce a precise legal assessment with exact statutory calculations.
 
+WHICH LAW APPLIES — India's four Labour Codes came into force on 21 November 2025,
+replacing 29 central labour laws:
+- Code on Wages 2019 replaced the Payment of Wages Act 1936, Minimum Wages Act 1948,
+  Payment of Bonus Act 1965 and Equal Remuneration Act 1976.
+- Industrial Relations Code 2020 replaced the Industrial Disputes Act 1947 (incl. retrenchment
+  conditions earlier in S.25F) and the Industrial Employment (Standing Orders) Act 1946.
+- Code on Social Security 2020 replaced the Payment of Gratuity Act 1972 and the
+  EPF & MP Act 1952 (gratuity and provident fund now sit in this Code).
+For dues/events on or after 21 Nov 2025 cite the Code; for earlier dues the repealed Act may still
+govern under the Codes' savings provisions — cite the Code and give the earlier Act and section in
+brackets, e.g. "Code on Wages 2019 (earlier Payment of Wages Act S.15)". Do NOT invent section numbers
+for the Codes: name the Code and its subject if you are not certain of the exact section.
+
 PRIMARY STATUTES FOR EMPLOYMENT DISPUTES:
-- Industrial Disputes Act 1947: S.2(s) (workman definition), S.25F (retrenchment conditions),
-  S.25G (retrenchment procedure), S.25H (re-employment priority), S.10 (reference to tribunal)
-- Payment of Wages Act 1936: S.3 (liability to pay), S.15 (application to authority for unpaid wages)
-- Payment of Gratuity Act 1972: S.4 (payment of gratuity — 5 years minimum), 
-  S.7 (determination of gratuity), S.8 (recovery of gratuity)
-- Employees Provident Fund & MP Act 1952: S.6 (contributions), S.14B (damages for default)
+- Code on Wages 2019 — timely payment of wages and claims before the authority
+  (earlier Payment of Wages Act 1936 S.3, S.15)
+- Industrial Relations Code 2020 — retrenchment conditions (notice + compensation), recovery of money
+  due from the employer, Labour Court jurisdiction (earlier ID Act 1947 S.25F, S.33C(2), S.10)
+- Code on Social Security 2020 — gratuity (earlier Payment of Gratuity Act 1972 S.4, S.7) and
+  provident fund dues (earlier EPF & MP Act 1952 S.6, S.7A, S.14B). Gratuity normally needs
+  5 years' continuous service; fixed-term employees qualify after 1 year under the Code.
 - Shops and Establishments Act (state-specific): notice period requirements
 - POSH Act 2013: S.4 (Internal Complaints Committee), S.11 (inquiry procedure),
   S.13 (action taken report), S.16 (confidentiality)
@@ -156,7 +172,7 @@ Respond ONLY in valid JSON. No text outside JSON.
   "limitation_notes": "explanation",
   "claimant_rights": [
     "Right to X months notice period pay under Shops & Establishments Act",
-    "Right to gratuity under Payment of Gratuity Act if service >= 5 years"
+    "Right to gratuity under the Code on Social Security 2020 (earlier Payment of Gratuity Act) — 5 years' service, or 1 year for fixed-term employees"
   ],
   "respondent_defenses": [
     "Respondent defense 1",
@@ -206,8 +222,8 @@ Respond ONLY in valid JSON. No text outside JSON.
   ],
   "filing_steps": [
     "Step 1: Send legal notice to employer with 15-day deadline",
-    "Step 2: If no response, file application under Payment of Wages Act S.15 before Payment of Wages Authority",
-    "Step 3: For wrongful termination, file complaint under Industrial Disputes Act before Labour Court"
+    "Step 2: If no response, file a wage claim before the authority under the Code on Wages 2019 (earlier Payment of Wages Act S.15)",
+    "Step 3: For wrongful termination, raise an industrial dispute under the Industrial Relations Code 2020 (earlier ID Act) before the Industrial Tribunal / Labour Court"
   ],
   "recommended_immediate_actions": [
     "Preserve all payslips, offer letter, termination email",
@@ -312,11 +328,12 @@ Analyze and provide the complete legal framework for obtaining those actions.
 PRIMARY STATUTES FOR NON-MONETARY DISPUTES:
 - Specific Relief Act 1963: S.36-42 (prohibitory/mandatory injunctions)
 - Code of Civil Procedure 1908: Order 39 (temporary injunctions), Rule 1-2 (grounds)
-- IPC S.268 (public nuisance), S.294 (obscene acts in public), S.441-443 (criminal trespass)
-- IPC S.499-500 (defamation), S.503-506 (criminal intimidation/threats)
-- IPC S.509 (word/gesture to insult modesty of woman)
-- IT Act 2000: S.66A (online communication causing annoyance — read with Constitution),
-  S.67 (obscene electronic content), S.72 (breach of confidentiality)
+- Bharatiya Nyaya Sanhita (BNS) 2023 — in force since 1 July 2024, replacing the IPC:
+  S.270 public nuisance (IPC 268), S.296 obscene acts (IPC 294), S.329 criminal trespass (IPC 441-443),
+  S.356 defamation (IPC 499-500), S.351 criminal intimidation (IPC 503-506),
+  S.79 word/gesture to insult modesty of a woman (IPC 509)
+- IT Act 2000: S.67 (obscene electronic content), S.72 (breach of confidentiality).
+  Do NOT cite S.66A — it was struck down by the Supreme Court in Shreya Singhal v. Union of India (2015).
 - Protection of Women from Domestic Violence Act 2005: S.12 (applications), S.18 (protection orders)
 - Noise Pollution (Regulation and Control) Rules 2000: permissible decibel limits
 - Apartment Owners Association laws (state-specific): for neighbour/housing society disputes
@@ -383,24 +400,32 @@ You are a senior Indian criminal lawyer providing advisory on criminal matters.
 THIS CASE INVOLVES CRIMINAL OFFENCES — mediation is NOT applicable.
 Your role: guide the victim on safety, evidence preservation, FIR filing, and legal rights.
 
-PRIMARY CRIMINAL STATUTES:
-- IPC S.323 (voluntarily causing hurt), S.324 (hurt by dangerous weapons),
-  S.325 (grievous hurt), S.326 (grievous hurt by dangerous weapons)
-- IPC S.354 (assault/criminal force on woman), S.354A-D (sexual harassment, voyeurism, stalking)
-- IPC S.376 (rape/sexual assault)
-- IPC S.406 (criminal breach of trust), S.420 (cheating and dishonestly inducing delivery)
-- IPC S.498A (cruelty by husband or relatives)
-- IPC S.499-500 (defamation — criminal), S.503-506 (criminal intimidation)
-- IPC S.509 (word/gesture to insult modesty)
+WHICH CODE APPLIES:
+- Incidents on or after 1 July 2024: Bharatiya Nyaya Sanhita (BNS) 2023 for offences and
+  Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023 for procedure.
+- Incidents before 1 July 2024: IPC 1860 and CrPC 1973 still govern those offences.
+- Always cite the applicable code first and give the other code's equivalent in brackets,
+  e.g. "BNS S.115(2) (earlier IPC S.323)".
+
+PRIMARY CRIMINAL STATUTES (BNS, with earlier IPC equivalents):
+- S.115(2) voluntarily causing hurt (IPC 323); S.118(1) hurt by dangerous weapons (IPC 324);
+  S.117(2) grievous hurt (IPC 325); S.118(2) grievous hurt by dangerous weapons (IPC 326)
+- S.74 assault/criminal force on a woman (IPC 354); S.75 sexual harassment (IPC 354A);
+  S.77 voyeurism (IPC 354C); S.78 stalking (IPC 354D)
+- S.64 rape (IPC 376)
+- S.316 criminal breach of trust (IPC 406); S.318 cheating (IPC 420)
+- S.85 cruelty by husband or relatives (IPC 498A)
+- S.356 defamation (IPC 499-500); S.351 criminal intimidation (IPC 503-506)
+- S.79 word/gesture to insult modesty of a woman (IPC 509)
 - IT Act 2000: S.66C (identity theft), S.66D (cheating by personation), S.67 (obscene content)
 - Protection of Women from Domestic Violence Act 2005 (PWDVA): S.12, S.18, S.19, S.20
 - POCSO Act 2012: if victim is a minor (below 18)
 - SC/ST (Prevention of Atrocities) Act 1989: if caste-based discrimination/violence
 
 CLASSIFY OFFENCES:
-- Cognizable offence (police can arrest without warrant): assault, rape, IPC 420 fraud, stalking
-- Non-cognizable offence (police cannot arrest without magistrate order): minor defamation
-- Bailable vs. non-bailable (based on First Schedule to CrPC)
+- Cognizable offence (police can arrest without warrant): e.g. hurt with weapons, rape, cheating, stalking
+- Non-cognizable offence (police need a magistrate's order): e.g. simple hurt, defamation
+- Bailable vs. non-bailable: per the First Schedule to BNSS (CrPC for pre-July-2024 incidents)
 
 Respond ONLY in valid JSON. No text outside JSON.
 {
@@ -417,18 +442,18 @@ Respond ONLY in valid JSON. No text outside JSON.
   "jurisdiction_state": "State",
   "forum": "police|magistrate_court|sessions_court|high_court|family_court",
   "forum_name": "Specific station or court",
-  "ipc_sections": ["IPC 323", "IPC 506"],
-  "bailable_offences": ["IPC 323"],
-  "non_bailable_offences": ["IPC 376"],
-  "cognizable_offences": ["IPC 323"],
+  "ipc_sections": ["BNS S.115(2) (earlier IPC 323)", "BNS S.351 (earlier IPC 506)"],
+  "bailable_offences": ["BNS S.115(2)"],
+  "non_bailable_offences": ["BNS S.64"],
+  "cognizable_offences": ["BNS S.118(1)"],
   "non_cognizable_offences": [],
   "limitation_period_years": null,
   "is_within_limitation": true,
-  "limitation_notes": "Serious cognizable offences under IPC have no limitation period. Complaint must be filed promptly for evidence preservation.",
+  "limitation_notes": "Serious offences (punishable with more than 3 years) have no limitation period; for lesser offences BNSS S.514 (earlier CrPC S.468) sets limits. Complaint must be filed promptly for evidence preservation.",
   "claimant_rights": [
-    "Right to file FIR under CrPC S.154 — police cannot refuse a cognizable offence FIR",
+    "Right to have an FIR registered under BNSS S.173 (earlier CrPC S.154) — including a Zero FIR at any police station or an e-FIR",
     "Right to free legal aid under Legal Services Authorities Act 1987",
-    "Right to copy of FIR: CrPC S.154(2)"
+    "Right to a free copy of the FIR: BNSS S.173(2) (earlier CrPC S.154(2))"
   ],
   "key_legal_issues": [
     "Issue 1: Whether the offence is cognizable and FIR must be registered",
@@ -450,16 +475,16 @@ Respond ONLY in valid JSON. No text outside JSON.
     "Step 2 for evidence preservation"
   ],
   "support_resources": [
-    "Police Emergency: 100",
-    "NCW Helpline: 181",
+    "Emergency (ERSS): 112",
+    "Women Helpline: 181",
     "Cyber Crime: cybercrime.gov.in / 1930",
-    "Women Helpline: 1091"
+    "Women Police Helpline: 1091"
   ],
   "mediation_possible": false,
   "filing_steps": [
     "Step 1: Visit local police station with written complaint",
-    "Step 2: If police refuses FIR, send complaint to Superintendent of Police by registered post",
-    "Step 3: If still refused, file private complaint before Judicial Magistrate under CrPC S.156(3)"
+    "Step 2: If police refuses FIR, send complaint to Superintendent of Police — BNSS S.173(4) (earlier CrPC S.154(3))",
+    "Step 3: If still refused, apply to the Judicial Magistrate under BNSS S.175(3) (earlier CrPC S.156(3))"
   ],
   "recommended_immediate_actions": [
     "Preserve ALL evidence immediately — screenshots, photos, medical records, witnesses",
@@ -525,7 +550,7 @@ INSTRUCTIONS:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=True,
             temperature=0.15,
@@ -542,7 +567,7 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Legal Agent failed: {e}")
+        log_llm_fallback(logger, "Legal Agent", e)
         return _fallback_legal_output(case, track)
 
 
@@ -635,25 +660,35 @@ def _get_state_context(state: str, track: str, case: dict) -> str:
 def _post_process(result: dict, case: dict, track: str, intake_data: dict) -> dict:
     """Validate, compute, and enrich legal agent output."""
 
-    if not isinstance(result.get("applicable_laws"), list):
-        result["applicable_laws"] = []
-    if not isinstance(result.get("precedent_cases"), list):
-        result["precedent_cases"] = []
-    if not isinstance(result.get("claimant_rights"), list):
-        result["claimant_rights"] = []
-    if not isinstance(result.get("respondent_defenses"), list):
-        result["respondent_defenses"] = []
-    if not isinstance(result.get("relief_available"), list):
-        result["relief_available"] = []
+    # The UI and documents iterate these; a model may return one string
+    # instead of a list — keep its content rather than dropping it.
+    for field in ("applicable_laws", "precedent_cases", "claimant_rights", "respondent_defenses",
+                  "relief_available", "filing_steps", "recommended_immediate_actions",
+                  "key_legal_issues", "ipc_sections"):
+        value = result.get(field)
+        if isinstance(value, str) and value.strip():
+            result[field] = [value.strip()]
+        elif not isinstance(value, list):
+            result[field] = []
+    result["applicable_laws"] = [
+        law if isinstance(law, dict) else {"act": str(law), "section": "", "relevance": "", "strength": "SUPPORTING"}
+        for law in result["applicable_laws"]
+    ]
+    if result.get("legal_standing") not in ("WEAK", "MODERATE", "STRONG", "VERY_STRONG"):
+        result["legal_standing"] = "MODERATE"
+    result["total_statutory_dues"] = to_number(result.get("total_statutory_dues"), 0) or 0
 
     # Employment — calculate total statutory dues from entitlements
     if track == "employment":
-        entitlements = result.get("statutory_entitlements", {})
+        entitlements = result.get("statutory_entitlements")
+        if not isinstance(entitlements, dict):
+            entitlements = {}
+            result["statutory_entitlements"] = {}
         total = 0
         for key, val in entitlements.items():
             if isinstance(val, dict):
-                amt = val.get("amount", 0)
-                if isinstance(amt, (int, float)) and amt > 0:
+                amt = to_number(val.get("amount"), 0)
+                if amt and amt > 0:
                     total += amt
         result["total_statutory_dues"] = round(total, 2)
 
@@ -674,27 +709,8 @@ def _post_process(result: dict, case: dict, track: str, intake_data: dict) -> di
 
 
 def _fallback_legal_output(case: dict, track: str) -> dict:
-    return {
-        "track":                   track,
-        "applicable_laws":         [],
-        "legal_standing":          "MODERATE",
-        "legal_standing_reason":   "Legal analysis unavailable — manual review recommended",
-        "jurisdiction_state":      case.get("claimant_state", "India"),
-        "forum":                   "civil_court",
-        "forum_name":              "District Civil Court",
-        "limitation_period_years": 3,
-        "is_within_limitation":    True,
-        "limitation_notes":        "Could not determine — seek legal advice",
-        "claimant_rights":         ["Right to file civil suit", "Right to legal representation"],
-        "respondent_defenses":     ["To be determined"],
-        "key_legal_issues":        ["To be determined"],
-        "precedent_cases":         [],
-        "legal_notice_required":   True,
-        "legal_notice_notice_period_days": 15,
-        "relief_available":        ["To be determined"],
-        "filing_steps":            ["Consult a licensed advocate"],
-        "recommended_immediate_actions": ["Preserve all evidence immediately"],
-        "total_statutory_dues":    0,
-        "statutory_entitlements":  {},
-        "error":                   "Legal agent failed — fallback output",
-    }
+    """Rule-based legal mapping used when the LLM is unavailable."""
+    from app.agents import offline_analysis
+    result = offline_analysis.legal(case, track, case.get("intake_data") or {})
+    result["error"] = "Legal agent LLM unavailable — rule-based statute mapping applied"
+    return result

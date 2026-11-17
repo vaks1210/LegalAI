@@ -63,7 +63,7 @@ Signed Settlement Agreement → Both parties by email
 Each agent receives the previous agent's full output as context — creating an intelligent cascading analysis chain. Not just classification. Deep legal reasoning at every stage.
 
 ### ⚖️ Jurisdiction-Aware Legal Research
-Maps applicable Indian, US, and UK statutes with section numbers, relevance scores, claimant rights, and respondent defenses. Covers IPC, TPA, Consumer Protection Act 2019, Industrial Disputes Act, POSH Act, and 12+ dispute categories across 5 tracks.
+Maps applicable Indian, US, and UK statutes with section numbers, relevance scores, claimant rights, and respondent defenses. Covers BNS/BNSS (the 2023 criminal codes that replaced the IPC/CrPC), TPA, Consumer Protection Act 2019, the 2025 Labour Codes (Code on Wages, Industrial Relations, Social Security), POSH Act, and 12+ dispute categories across 5 tracks.
 
 ### 📊 Probabilistic Case Analytics
 Win probability (0–100%), ZOPA (Zone of Possible Agreement), court cost estimate, timeline projection, evidence strength score (0–100), and payment recovery probability. The AI Mediator uses ZOPA internally — **never revealed to either party**.
@@ -90,7 +90,7 @@ Each document has its own AI prompt, visual theme, and legal structure:
 | **Employment** | Wrongful termination, PF/gratuity, POSH Act, experience letter withheld |
 | **Consumer** | E-commerce non-delivery, insurance rejection, banking fraud, RERA delay |
 | **Non-Monetary** | Apology demands, neighbor disputes, social media defamation |
-| **Criminal** | Advisory only — FIR draft, IPC sections, relevant authority guidance |
+| **Criminal** | Advisory only — FIR draft, BNS sections (with earlier IPC equivalents), relevant authority guidance |
 
 ---
 
@@ -98,11 +98,11 @@ Each document has its own AI prompt, visual theme, and legal structure:
 
 | Layer | Technology |
 |---|---|
-| **Backend** | FastAPI · Python 3.11 · 14 REST endpoints |
+| **Backend** | FastAPI · Python 3.11+ · 35+ REST endpoints |
 | **AI / LLM** | Azure OpenAI GPT-4o · GPT-4o-mini |
 | **Database** | Azure Cosmos DB — cases, users, negotiations, documents |
 | **File Storage** | Azure Blob Storage — PDFs, evidence, signed agreements |
-| **Email** | Azure Communication Services — 10 automated triggers |
+| **Email** | SendGrid (local outbox in dev) — automated triggers across the case lifecycle |
 | **PDF Engine** | ReportLab — 6 document types, Unicode-safe `_safe()` processor |
 | **Auth** | Email OTP + JWT — no external auth provider |
 | **Safety** | Azure AI Content Safety — harmful content blocked |
@@ -159,7 +159,13 @@ legalai-resolver/
 │   └── respond.html               # Respondent portal — offer, accept/reject, decline
 │
 ├── tests/
-│   └── test_e2e.py                # 20-assertion end-to-end test
+│   ├── conftest.py                # Forces local backends + temp data dir
+│   ├── test_e2e_local.py          # Full lifecycle, offline
+│   ├── test_security.py           # OTP lockout, signed links, rate limiting
+│   ├── test_offline_analysis.py   # Rule-based routing / intake / legal
+│   └── test_negotiation_logic.py
+│
+├── scripts/                       # Live smoke test + SendGrid diagnostic
 │
 ├── requirements.txt
 ├── startup.sh                     # Azure App Service startup command
@@ -168,7 +174,84 @@ legalai-resolver/
 
 ---
 
-## ⚙️ Running Locally
+## 🏢 For Businesses (B2B)
+
+LegalAI is built for organisations with many recurring disputes — landlords and property managers,
+lenders/NBFCs, distributors and e-commerce sellers, HR teams. A business files disputes in bulk under its
+own name, tracks recovery, and integrates with its own systems.
+
+| | |
+|---|---|
+| **Business console** | `/business` — overview (claimed vs settled, settlement rate, days to settle, plan usage), cases, bulk upload, team, settings, developer tools |
+| **Bulk filing** | CSV or JSON, up to 500 rows. Required: `respondent_name`, `respondent_email`, `reference` (your invoice/loan/agreement no.). Optional: `claim_amount`, `incident_date`, `due_date`, `respondent_phone`, `language`, `jurisdiction`, `evidence`, `details`, `dispute_text`. Idempotent on `reference`; per-row error report |
+| **Templates** | Built-in: overdue invoice, unpaid rent, loan default, dishonoured cheque — plus your own (`PUT /api/orgs/{id}/templates/{key}`) |
+| **Team** | Owner / admin / agent roles; agents work cases through the normal case workspace |
+| **API keys** | `X-API-Key: lai_...` — file and track cases from your billing or loan system (keys can't administer the org) |
+| **Webhooks** | Signed `case.status_changed` and `case.payment_received` events (`X-LegalAI-Signature: sha256=HMAC(secret, body)`), retries, delivery log, SSRF-safe URLs |
+| **Payments** | On settlement: Razorpay payment link (if configured, auto-confirmed by Razorpay's webhook) or your UPI/bank details sent to the respondent |
+| **Mediator review** | Optional: a human mediator (`/mediator`) approves or edits each AI proposal before the parties see it; named in the agreement. Unreviewed drafts are released after the SLA, flagged |
+| **Evidence** | Each acceptance records who/how/when/IP and a fingerprint of the exact terms; agreements carry a Record of Acceptance and can be verified with `POST /api/documents/verify` |
+| **Plans** | Monthly case limits: free 25 · starter 500 · growth 5000 · enterprise unlimited |
+| **Instalment plans** | Set a policy (max instalments, minimum per instalment); respondents choose a plan when accepting. Per-instalment links, reminders 3 days before each due date, default after 7 days' grace (full balance due, breach notice, `case.payment_defaulted` webhook). The agreement prints the schedule |
+| **WhatsApp & SMS** | Invites, deadline nudges (3 days and 1 day before), proposals and payment reminders also go to the respondent's phone: Meta WhatsApp Cloud API first, Twilio SMS as fallback. Every notice is logged; an auto-escalated court file includes a dated "Service of Notice" record. Respondents can opt out |
+| **Languages** | Respondent notices and portal in English, Hindi, Bengali, Marathi, Tamil, Telugu, Spanish and Arabic (RTL); `language` column per row. With an LLM, the claimant's narrative is machine-translated (English original authoritative) |
+| **Jurisdictions** | India, England & Wales, Singapore, UAE, United States: currency, courts and tribunals by claim size, statutes, notice periods, governing-law and e-signature clauses, and an LLM override so foreign cases never cite Indian law. Org default plus `jurisdiction` column per row |
+
+```bash
+curl -X POST https://YOUR_HOST/api/orgs/ORG_ID/cases/bulk \
+  -H "X-API-Key: lai_..." -H "Content-Type: application/json" \
+  -d '{"template": "overdue_invoice", "auto_invite": true, "rows": [
+        {"respondent_name": "Ravi Traders", "respondent_email": "accounts@ravitraders.example",
+         "reference": "INV-1001", "claim_amount": 48500, "due_date": "2026-06-15",
+         "evidence": "invoice, delivery challan"}]}'
+```
+
+---
+
+> **Before launch:** the non-English translations and the non-Indian jurisdiction packs were prepared without
+> native-speaker or local-counsel review. Have them reviewed. WhatsApp needs an approved utility template
+> (`legalai_update`, two body variables: message and link), and Indian SMS senders must be DLT-registered.
+
+## ⚡ Quick Start (no cloud account needed)
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Open [http://localhost:8000](http://localhost:8000). That's it — every integration falls back to a local implementation when its credentials are missing:
+
+| Integration | Configured | Not configured (local mode) |
+|---|---|---|
+| Database | Azure Cosmos DB | SQLite at `data/legalai.db` |
+| File storage | Azure Blob (SAS links) | `data/files/` with HMAC-signed, expiring links |
+| LLM | Azure OpenAI **or** OpenAI / any OpenAI-compatible server | Rule-based analysis: keyword classification, evidence scoring, curated Indian statute table, ZOPA maths |
+| Email | SendGrid | Saved to `data/outbox/` — browse at `GET /api/dev/outbox`; login codes are shown in the UI |
+| Content safety | Azure AI Content Safety | Local abuse-pattern rules |
+
+`GET /health` reports exactly which backend each integration is using. Mix and match freely — e.g. set only `OPENAI_API_KEY` to get full AI analysis with everything else local. See [`.env.example`](.env.example) for every option.
+
+> ⚠️ Local email mode returns login codes in the API response. It is disabled when `ENVIRONMENT=production` (which also refuses to start without a strong `JWT_SECRET_KEY`). Never expose a dev-mode instance publicly.
+
+### Docker
+
+```bash
+docker build -t legalai .
+docker run -p 8000:8000 -v legalai-data:/data legalai
+```
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite runs fully offline and walks the whole lifecycle — login → submit → analysis → demand-letter PDF → invite → respondent offers → AI proposal → both accept → settlement PDF — plus auth, criminal-routing and signed-link security checks. CI runs it on every push (`.github/workflows/tests.yml`). `scripts/smoke_test_live.py` exercises a running deployment.
+
+---
+
+## ⚙️ Running Locally (with Azure services)
 
 ### Prerequisites
 - Python 3.11+
@@ -176,7 +259,7 @@ legalai-resolver/
   - Azure OpenAI (with `gpt-4o` and `gpt-4o-mini` deployments)
   - Azure Cosmos DB (with `legalai-db` database + 4 containers)
   - Azure Blob Storage (with 3 containers)
-  - Azure Communication Services (with verified email domain)
+  - SendGrid account with a verified sender (email)
   - Azure AI Content Safety
 
 ### 1. Clone
@@ -224,9 +307,9 @@ COSMOS_DATABASE_NAME=legalai-db
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;...
 AZURE_STORAGE_ACCOUNT_NAME=your_storage_account_name
 
-# Azure Communication Services
-AZURE_COMM_CONNECTION_STRING=endpoint=https://...;accesskey=...
-AZURE_SENDER_EMAIL=DoNotReply@your-domain.azurecomm.net
+# Email (SendGrid)
+SENDGRID_API_KEY=SG.your_key
+SENDGRID_FROM_EMAIL=noreply@your-verified-domain.com
 
 # Azure AI Content Safety
 CONTENT_SAFETY_KEY=your_key
@@ -247,7 +330,7 @@ APPINSIGHTS_INSTRUMENTATION_KEY=your_key
 ### 5. Create Cosmos DB containers
 
 ```bash
-# Run once to provision the 4 containers
+# Run once to provision the 5 containers
 az cosmosdb sql container create --account-name YOUR_COSMOS \
   --resource-group YOUR_RG --database-name legalai-db \
   --name cases --partition-key-path "/id"
@@ -263,6 +346,10 @@ az cosmosdb sql container create --account-name YOUR_COSMOS \
 az cosmosdb sql container create --account-name YOUR_COSMOS \
   --resource-group YOUR_RG --database-name legalai-db \
   --name documents --partition-key-path "/id"
+
+az cosmosdb sql container create --account-name YOUR_COSMOS \
+  --resource-group YOUR_RG --database-name legalai-db \
+  --name organizations --partition-key-path "/id"
 ```
 
 ### 6. Run
@@ -329,8 +416,8 @@ az webapp config appsettings set \
     COSMOS_DATABASE_NAME="legalai-db" \
     AZURE_STORAGE_CONNECTION_STRING="your_connection_string" \
     AZURE_STORAGE_ACCOUNT_NAME="your_account_name" \
-    AZURE_COMM_CONNECTION_STRING="your_connection_string" \
-    AZURE_SENDER_EMAIL="DoNotReply@your-domain.azurecomm.net" \
+    SENDGRID_API_KEY="SG.your_key" \
+    SENDGRID_FROM_EMAIL="noreply@your-verified-domain.com" \
     CONTENT_SAFETY_KEY="your_key" \
     CONTENT_SAFETY_ENDPOINT="your_endpoint" \
     JWT_SECRET_KEY="your_64_char_secret" \
@@ -384,18 +471,21 @@ curl https://legalai-resolver.azurewebsites.net/health
 | `POST` | `/api/cases/{id}/send-invite` | Email invite to respondent | JWT |
 | `GET` | `/api/cases/{id}/timeline` | Chronological case event list | JWT |
 | `POST` | `/api/cases/{id}/confirm-payment` | Confirm payment received / report breach | JWT |
-| `GET` | `/api/respondent/case/{id}?email=X` | Filtered respondent view (no analytics) | None |
-| `POST` | `/api/respondent/accept-in-full` | Respondent accepts full amount | None |
-| `POST` | `/api/respondent/decline` | Respondent declines → auto-escalate | None |
+| `POST` | `/api/cases/{id}/resend-invite` | Re-email the respondent's signed portal link | JWT |
+| `GET` | `/api/respondent/case/{id}?email=X&t=TOKEN` | Filtered respondent view (no analytics) | Link token |
+| `POST` | `/api/respondent/accept-in-full` | Respondent accepts full amount | Link token |
+| `POST` | `/api/respondent/decline` | Respondent declines → auto-escalate | Link token |
 | `POST` | `/api/negotiation/submit-claimant-offer` | Submit claimant round offer | JWT |
-| `POST` | `/api/negotiation/submit-respondent-offer` | Submit respondent round offer | None |
-| `POST` | `/api/negotiation/proposal-response` | Accept or Reject AI proposal | Optional |
-| `GET` | `/api/negotiation/status/{id}` | Full negotiation state + round details | JWT |
+| `POST` | `/api/negotiation/submit-respondent-offer` | Submit respondent round offer | Link token |
+| `POST` | `/api/negotiation/proposal-response` | Accept or Reject AI proposal | JWT (claimant) / link token (respondent) |
+| `GET` | `/api/negotiation/status/{id}` | Full negotiation state + round details (claimant only) | JWT |
 | `GET` | `/api/documents/{id}/all` | All available document download URLs | JWT |
 | `GET` | `/api/documents/{id}/demand-letter` | Demand letter SAS URL | JWT |
 | `GET` | `/api/documents/{id}/settlement` | Settlement agreement SAS URL | JWT |
 | `GET` | `/api/documents/{id}/court-file` | Court file SAS URL | JWT |
-| `GET` | `/health` | Service health check for all Azure services | None |
+| `GET` | `/health` | Backend report (`?deep=true` also pings the LLM) | None |
+| `GET` | `/api/files/{container}/{blob}` | Signed, expiring file download (local storage mode) | Signature |
+| `GET` | `/api/dev/outbox?email=X` | Captured emails (local email mode, non-production only) | None |
 
 ---
 
@@ -426,7 +516,11 @@ curl https://legalai-resolver.azurewebsites.net/health
 | Security headers | X-Frame-Options: DENY · HSTS · X-Content-Type-Options: nosniff |
 | Input validation | Path traversal, SQLi, XSS blocked at middleware layer |
 | Content filtering | Azure AI Content Safety — severity ≥ 4 blocked |
-| JWT auth | HS256 signed · 72-hour expiry · Bearer scheme |
+| JWT auth | HS256 signed · 72-hour expiry · Bearer scheme · strong secret enforced in production |
+| Login codes | `secrets`-generated OTP · constant-time compare · locked after 5 wrong attempts |
+| Respondent access | No account needed — every respondent action requires the HMAC token in their emailed link; the claimant can resend it |
+| File downloads | Time-limited SAS URLs (Azure) or HMAC-signed expiring links (local), re-signed on every read |
+| Criminal safety net | Violence / threats / stalking are routed to FIR advisory, never mediation — even when the LLM is unavailable |
 | Respondent privacy | Analytics, ZOPA, win probability hidden from respondent |
 | DPDP compliance | Explicit consent + disclaimer required before case submission |
 
@@ -436,9 +530,10 @@ curl https://legalai-resolver.azurewebsites.net/health
 
 - Legal accuracy is AI-generated — not verified by a licensed advocate
 - Settlement agreements are AI-drafted — should be reviewed by a lawyer before use in court
-- In-memory rate limiter — for multi-worker production, replace with Redis
-- PDFs lost on server restart if not using Blob Storage (ephemeral on free hosting tiers)
-- No authentication on respondent portal — verified by email address match only
+- Single-instance design: the rate limiter is in memory and the deadline worker runs in-process — run one instance (`--workers 1`), or move both to shared infrastructure (e.g. Redis + a scheduled job) before scaling out
+- Local mode stores the database and PDFs on disk (`LOCAL_DATA_DIR`) — mount persistent storage, or configure Cosmos DB / Blob Storage, for anything beyond a demo
+- Offline (no-LLM) mode gives a rule-based baseline only — configure an LLM for case-specific reasoning
+- No self-service data export/erasure yet (DPDP data-principal rights) — retention policy for cases involving another party needs a product/legal decision
 
 ---
 

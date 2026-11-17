@@ -1,5 +1,6 @@
 import logging
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
+from app.core.jurisdictions import localize_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ SEVERITY LEVELS — apply precisely:
   LOW:      Amount < Rs.10,000 OR minor inconvenience, no ongoing harm, weak legal basis
   MEDIUM:   Amount Rs.10,000–Rs.2,00,000 OR moderate harm, clear legal basis
   HIGH:     Amount > Rs.2,00,000 OR significant ongoing harm, strong legal basis
-  CRIMINAL: Any violence / assault / threat / fraud (IPC 420) / sexual offence — regardless of amount
+  CRIMINAL: Any violence / assault / threat / fraud (BNS S.318, earlier IPC 420) / sexual offence — regardless of amount
 
 LIMITATION ACT 1963 — apply strictly:
   Contract breach, rent deposit, salary arrears:    3 years from date of cause of action
@@ -124,7 +125,8 @@ experience_letter_withheld, pf_gratuity_default, non_compete_violation, other_em
 STATUTORY CALCULATION RULES (apply precisely if salary and duration are provided):
 - Notice period pay: last_drawn_salary × notice_period_months
 - Gratuity: (last_drawn_salary × 15 × completed_years_of_service) ÷ 26
-  → Gratuity ONLY applicable if service ≥ 5 years
+  → Gratuity applies after 5 years of continuous service (1 year for fixed-term employees
+    under the Code on Social Security 2020, in force since 21 Nov 2025)
 - PF: Employer must contribute 12% of basic salary; claimant can claim unpaid employer PF
 - Variable pay / bonus: only if contractually promised
 
@@ -300,7 +302,7 @@ INSTRUCTIONS:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=False,
             temperature=0.1,
@@ -350,36 +352,16 @@ INSTRUCTIONS:
         return result
 
     except Exception as e:
-        logger.error(f"Intake Agent failed: {e}")
+        log_llm_fallback(logger, "Intake Agent", e)
         return _fallback_intake(case, track, str(e))
 
 
 def _fallback_intake(case: dict, track: str, error: str) -> dict:
     """
-    Safe fallback so the pipeline never crashes even if intake fails.
-    Downstream agents receive minimal but valid data.
+    Fallback when the LLM is unavailable: rule-based intake with the same
+    schema, so downstream agents and the UI keep working.
     """
-    return {
-        "dispute_type":            "Unknown",
-        "dispute_category":        "other",
-        "track_confirmed":         track,
-        "severity":                "MEDIUM",
-        "key_facts":               [case.get("dispute_text", "")[:200]],
-        "parties_summary":         f"{case['claimant_name']} vs {case['respondent_name']}",
-        "incident_date_confirmed": case.get("incident_date"),
-        "jurisdiction_state":      case.get("claimant_state", "India"),
-        "jurisdiction_city":       case.get("claimant_city"),
-        "evidence_available":      [],
-        "evidence_strength_score": 35,
-        "missing_proof_checklist": ["All supporting documents — intake failed"],
-        "is_time_barred":          False,
-        "limitation_notes":        None,
-        "respondent_is_company":   case.get("respondent_type") == "company",
-        "key_issues":              ["To be determined — intake agent failed"],
-        "claimant_strengths":      [],
-        "claimant_weaknesses":     ["Intake analysis unavailable"],
-        "confirmed_claim_amount":  case.get("claim_amount"),
-        "currency":                case.get("currency", "INR"),
-        "recommended_approach":    "mediation",
-        "error":                   error,
-    }
+    from app.agents import offline_analysis
+    result = offline_analysis.intake(case, track)
+    result["error"] = error
+    return result

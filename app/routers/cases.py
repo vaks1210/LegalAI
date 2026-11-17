@@ -4,17 +4,24 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
+from app.core.background import in_thread
 from app.agents.strategy_agent import generate_case_strategy
 from app.config import settings
+from app.core.access import is_claimant_side, require_claimant_side, require_party
 from app.core.case_router import route_case
 from app.core.dependencies import get_current_user
+from app.core.uploads import MAX_UPLOAD_BYTES, validate_upload
 from app.core.exceptions import CaseNotFound, ContentSafetyViolation, UnauthorizedAccess
 from app.models.case import CaseStatus, DisputeSubmission
-from app.services.blob_service import blob_service
+from app.services.blob_service import blob_service, refresh_case_urls
 from app.services.content_safety import content_safety_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.services import messaging
+from app.core.i18n import case_language
+from app.core.jurisdictions import money
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -62,6 +69,8 @@ async def submit_case(
 
     # 5. Create case
     case_data = body.model_dump()
+    from app.core.jurisdictions import JURISDICTIONS
+    case_data["currency"] = JURISDICTIONS[case_data["jurisdiction"]].currency
     case      = cosmos_service.create_case(case_data)
     case_id   = case["id"]
     logger.info(f"Case created | id={case_id} | email={body.claimant_email}")
@@ -69,18 +78,11 @@ async def submit_case(
     cosmos_service.transition_case(case_id, CaseStatus.ANALYZING)
 
     # 6. Fast case router (sync)
-    routing = route_case(
-        dispute_text=body.dispute_text,
-        claim_amount=body.claim_amount,
-        respondent_type=body.respondent_type.value,
-        claimant_state=body.claimant_state,
-    )
-    cosmos_service.update_case(case_id, {"track": routing["track"], "routing": routing})
+    routing, is_criminal = await run_in_threadpool(route_new_case, case_id)
 
     # 7. Criminal → no mediation
-    if routing.get("is_criminal") or routing["track"] == "criminal":
-        cosmos_service.transition_case(case_id, CaseStatus.CRIMINAL_ADVISORY)
-        background_tasks.add_task(_handle_criminal_advisory, case_id)
+    if is_criminal:
+        background_tasks.add_task(in_thread(_handle_criminal_advisory), case_id)
         return {
             "case_id": case_id,
             "status":  "CRIMINAL_ADVISORY",
@@ -92,7 +94,7 @@ async def submit_case(
         }
 
     # 8. Background pipeline for all other tracks
-    background_tasks.add_task(_run_full_pipeline, case_id)
+    background_tasks.add_task(in_thread(_run_full_pipeline), case_id)
 
     return {
         "case_id": case_id,
@@ -105,6 +107,54 @@ async def submit_case(
 # ─────────────────────────────────────────────────────────────
 # BACKGROUND PIPELINE
 # ─────────────────────────────────────────────────────────────
+
+def route_new_case(case_id: str) -> tuple[dict, bool]:
+    """
+    Classify a freshly created (ANALYZING) case into a track. Criminal
+    matters go straight to CRIMINAL_ADVISORY — never to mediation.
+    Shared by single submission and bulk filing.
+    """
+    case = cosmos_service.get_case(case_id)
+    routing = route_case(
+        dispute_text=case["dispute_text"],
+        claim_amount=case.get("claim_amount"),
+        respondent_type=case.get("respondent_type") or "individual",
+        claimant_state=case.get("claimant_state") or "",
+    )
+    cosmos_service.update_case(case_id, {"track": routing["track"], "routing": routing})
+    is_criminal = bool(routing.get("is_criminal")) or routing["track"] == "criminal"
+    if is_criminal:
+        cosmos_service.transition_case(case_id, CaseStatus.CRIMINAL_ADVISORY)
+    return routing, is_criminal
+
+
+async def analyse_new_case(case_id: str) -> None:
+    """Route + full analysis for a case created without routing (bulk filing)."""
+    _, is_criminal = route_new_case(case_id)
+    if is_criminal:
+        await _handle_criminal_advisory(case_id)
+    else:
+        await _run_full_pipeline(case_id)
+
+
+def deliver_invite(case: dict) -> bool:
+    """Email the respondent their signed portal link and mark INVITE_SENT."""
+    sent = email_service.send_case_invite(
+        to_email=case["respondent_email"],
+        respondent_name=case["respondent_name"],
+        claimant_name=case["claimant_name"],
+        case_id=case["id"],
+        claim_amount=case.get("claim_amount"),
+        dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
+    )
+    messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent:
+        return False
+    cosmos_service.transition_case(case["id"], CaseStatus.INVITE_SENT)
+    return True
+
 
 async def _handle_criminal_advisory(case_id: str):
     """Runs intake + legal + document agents for criminal track."""
@@ -164,7 +214,10 @@ async def _run_full_pipeline(case_id: str):
                 logger.error(f"Agent failed | name={agent_name} | case_id={case_id} | error={agent_err}")
                 cosmos_service.update_case(case_id, {f"{agent_name}_error": str(agent_err)})
 
-        cosmos_service.transition_case(case_id, CaseStatus.ANALYZED)
+        cosmos_service.transition_case(
+            case_id, CaseStatus.ANALYZED,
+            {"analyzed_at": datetime.now(timezone.utc).isoformat()},
+        )
         track_case_event(case_id, "PIPELINE_COMPLETE")
         logger.info(f"Pipeline complete | case_id={case_id}")
 
@@ -187,7 +240,16 @@ async def _run_full_pipeline(case_id: str):
 
 @router.get("/my-cases")
 async def get_my_cases(current_user: dict = Depends(get_current_user)):
-    cases = cosmos_service.get_cases_by_email(current_user["email"])
+    email = current_user["email"].lower()
+    cases = []
+    for c in cosmos_service.get_cases_by_email(email):
+        if is_claimant_side(c, current_user):
+            cases.append(refresh_case_urls(c))
+        else:
+            # The user is the respondent: never return the claimant's private analysis.
+            view = cosmos_service.get_case_for_respondent(c["id"])
+            if view:
+                cases.append({**view, "role": "respondent"})
     return {"cases": cases, "total": len(cases)}
 
 
@@ -203,7 +265,8 @@ async def get_case_status(case_id: str):
         "status":              case["status"],
         "track":               case.get("track"),
         "current_round":       case.get("current_round", 0),
-        "pipeline_error":      case.get("pipeline_error"),
+        # Public endpoint: report *that* analysis failed, never the internal error text.
+        "pipeline_error":      "Analysis failed — please contact support." if case.get("pipeline_error") else None,
         "allowed_transitions": get_allowed_transitions(case),
         "is_expired":          is_expired(case),
     }
@@ -215,9 +278,8 @@ async def get_case(case_id: str, current_user: dict = Depends(get_current_user))
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
-    return case
+    require_claimant_side(case, current_user)
+    return refresh_case_urls(case)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -237,8 +299,7 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     if case["status"] != CaseStatus.ANALYZED.value:
         raise HTTPException(
             status_code=409,
@@ -253,8 +314,11 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
         case_id=case_id,
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
     )
-    if not sent:
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
 
     # Notify claimant that invite was dispatched
@@ -277,6 +341,45 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
     return {"message": f"Invite sent to {case['respondent_email']}", "status": "INVITE_SENT"}
 
 
+@router.post("/{case_id}/resend-invite")
+async def resend_invite(case_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Re-sends the respondent's portal link (with their signed access token)
+    while the case is active — e.g. the email was lost, or the case predates
+    signed links. Does not change case status.
+    """
+    from app.models.case import TERMINAL_STATES
+
+    case = cosmos_service.get_case(case_id)
+    if not case:
+        raise CaseNotFound(case_id)
+    require_claimant_side(case, current_user)
+    status = CaseStatus(case["status"])
+    if status in TERMINAL_STATES or status in (
+        CaseStatus.SUBMITTED, CaseStatus.ANALYZING, CaseStatus.ANALYZED,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invite can only be resent after it was first sent and while the case is active. Current: {case['status']}",
+        )
+
+    sent = email_service.send_case_invite(
+        to_email=case["respondent_email"],
+        respondent_name=case["respondent_name"],
+        claimant_name=case["claimant_name"],
+        case_id=case_id,
+        claim_amount=case.get("claim_amount"),
+        dispute_summary=case["dispute_text"],
+        language=case_language(case),
+        currency=case.get("currency") or "INR",
+    )
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
+        raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
+    logger.info(f"Invite resent | case_id={case_id}")
+    return {"message": f"Invite link resent to {case['respondent_email']}"}
+
+
 # ─────────────────────────────────────────────────────────────
 # EVIDENCE UPLOAD
 # ─────────────────────────────────────────────────────────────
@@ -290,21 +393,12 @@ async def upload_evidence(
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
-    allowed = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx", ".txt"}
-    original_name = file.filename or "evidence.bin"
-    ext = os.path.splitext(original_name)[1].lower()
-    if ext and ext not in allowed:
-        raise HTTPException(status_code=400, detail="Unsupported evidence file type.")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    original_name, content_type = validate_upload(file.filename, content)
 
     blob_name    = f"{case_id}/{uuid.uuid4().hex}_{original_name}"
-    content_type = file.content_type or "application/octet-stream"
     blob_service.upload("evidence", blob_name, content, content_type=content_type)
     download_url = blob_service.generate_download_url("evidence", blob_name, expiry_hours=720)
 
@@ -335,10 +429,9 @@ async def generate_strategy(case_id: str, current_user: dict = Depends(get_curre
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
 
-    strategy = generate_case_strategy(case)
+    strategy = await run_in_threadpool(generate_case_strategy, case)
     cosmos_service.update_case(case_id, {"strategy_data": strategy})
     return strategy
 
@@ -352,6 +445,7 @@ async def confirm_payment(
     case_id: str,
     honored: bool,
     background_tasks: BackgroundTasks,
+    installment: int | None = None,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -364,20 +458,22 @@ async def confirm_payment(
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if case["claimant_email"].lower() != current_user["email"].lower():
-        raise UnauthorizedAccess()
+    require_claimant_side(case, current_user)
     if case["status"] != CaseStatus.SETTLED.value:
         raise HTTPException(status_code=409, detail="Payment confirmation only available for SETTLED cases.")
 
     cosmos_service.set_settlement_honored(case_id, honored)
 
     if honored:
-        cosmos_service.update_case(case_id, {
-            "payment_confirmed_at": datetime.now(timezone.utc).isoformat()
-        })
+        from app.services import payments
+        updated = payments.mark_paid(case_id, "claimant", installment_no=installment)
+        pay = updated.get("payment") or {}
+        if pay.get("status") != "paid":
+            return {"message": f"Payment recorded. {money(pay.get('amount', 0) - pay.get('paid_amount', 0), case)} "
+                               "remains under the instalment plan.", "outcome": "PARTIALLY_PAID"}
         return {"message": "Payment confirmed. Case fully resolved.", "outcome": "PAYMENT_RECEIVED"}
 
-    background_tasks.add_task(_generate_and_send_breach_notice, case_id)
+    background_tasks.add_task(in_thread(_generate_and_send_breach_notice), case_id)
     return {
         "message": "Payment breach recorded. A Breach of Settlement Notice is being generated.",
         "outcome": "BREACH_RECORDED",
@@ -408,7 +504,7 @@ async def _generate_and_send_breach_notice(case_id: str):
             headline="Breach of Settlement Notice Ready",
             summary=(
                 f"Your Breach of Settlement Notice has been generated for Case "
-                f"#{case_id[:8].upper()} (amount: Rs. {settled_amount:,.0f}). "
+                f"#{case_id[:8].upper()} (amount: {money(settled_amount, case)}). "
                 "This document is stronger than the original demand letter as it "
                 "references the executed settlement agreement. Send it to the respondent "
                 "immediately. If payment is still not received within 7 days, file it "
@@ -432,9 +528,7 @@ async def get_mediation_certificate(case_id: str, current_user: dict = Depends(g
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"].lower() != current_user["email"].lower() and
-            case["respondent_email"].lower() != current_user["email"].lower()):
-        raise UnauthorizedAccess()
+    require_party(case, current_user)
 
     docs_data = case.get("documents_data") or {}
     url = docs_data.get("mediation_certificate_url")
@@ -449,8 +543,9 @@ async def get_mediation_certificate(case_id: str, current_user: dict = Depends(g
             cosmos_service.update_case(case_id, {
                 "documents_data": {**docs_data, "mediation_certificate_url": url}
             })
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to generate certificate: {e}")
+        except Exception:
+            logger.exception(f"Mediation certificate generation failed | case_id={case_id}")
+            raise HTTPException(status_code=500, detail="Failed to generate certificate. Please try again.")
 
     return {
         "download_url": url,
@@ -468,9 +563,7 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
     case = cosmos_service.get_case(case_id)
     if not case:
         raise CaseNotFound(case_id)
-    if (case["claimant_email"].lower() != current_user["email"].lower() and
-            case["respondent_email"].lower() != current_user["email"].lower()):
-        raise UnauthorizedAccess()
+    require_party(case, current_user)
 
     neg    = cosmos_service.get_negotiation_by_case(case_id)
     rounds = neg.get("rounds", []) if neg else []
@@ -479,7 +572,8 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
     events = [{"timestamp": case["created_at"], "event": "CASE_SUBMITTED", "label": "Case submitted"}]
 
     if case.get("intake_data"):
-        events.append({"timestamp": case.get("updated_at"), "event": "ANALYZED", "label": "AI analysis complete"})
+        analyzed_at = case.get("analyzed_at") or case.get("created_at")
+        events.append({"timestamp": analyzed_at, "event": "ANALYZED", "label": "AI analysis complete"})
 
     for r in rounds:
         rn = r["round_number"]
@@ -491,10 +585,10 @@ async def get_case_timeline(case_id: str, current_user: dict = Depends(get_curre
             events.append({"timestamp": rs["submitted_at"], "event": f"ROUND_{rn}_RESPONDENT_OFFER", "label": f"Round {rn}: Respondent submitted offer"})
         if r.get("proposal_issued_at"):
             amt = r.get("ai_proposed_amount", 0) or 0
-            events.append({"timestamp": r["proposal_issued_at"], "event": f"ROUND_{rn}_PROPOSAL", "label": f"Round {rn}: AI proposal — Rs. {amt:,.0f}"})
+            events.append({"timestamp": r["proposal_issued_at"], "event": f"ROUND_{rn}_PROPOSAL", "label": f"Round {rn}: AI proposal — {money(amt, case)}"})
 
     if case["status"] == "SETTLED":
-        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — Rs. {case.get('settled_amount', 0):,.0f}"})
+        events.append({"timestamp": case.get("settled_at") or case["updated_at"], "event": "SETTLED", "label": f"Settled — {money((case.get('settled_amount') or 0), case)}"})
     elif case["status"] in ("ESCALATED", "AUTO_ESCALATED"):
         events.append({"timestamp": case.get("escalated_at") or case["updated_at"], "event": "ESCALATED", "label": "Escalated — court file generated"})
 

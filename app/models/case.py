@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator, Field
 
 
 class CaseTrack(str, Enum):
@@ -51,6 +51,8 @@ VALID_TRANSITIONS = {
         CaseStatus.PROOF_RESPONSE_PENDING,
         CaseStatus.MEDIATOR_REVIEW,
         CaseStatus.SETTLEMENT_PENDING_CONFIRMATION,
+        CaseStatus.SETTLING,        # respondent accepts the full claim
+        CaseStatus.ESCALATING,      # deadline passed with no offers (expiry worker)
         CaseStatus.AUTO_ESCALATED,
     ],
     CaseStatus.WAITING_FOR_CLAIMANT: [
@@ -96,6 +98,7 @@ VALID_TRANSITIONS = {
         CaseStatus.ESCALATING,
     ],
     CaseStatus.PROPOSAL_ISSUED: [
+        CaseStatus.NEGOTIATION_OPEN,  # neither party decided before the deadline
         CaseStatus.WAITING_FOR_CLAIMANT,
         CaseStatus.WAITING_FOR_RESPONDENT,
         CaseStatus.PROOF_REQUESTED,
@@ -105,6 +108,7 @@ VALID_TRANSITIONS = {
         CaseStatus.ESCALATING,
     ],
     CaseStatus.SETTLEMENT_PENDING_CONFIRMATION: [
+        CaseStatus.NEGOTIATION_OPEN,  # confirmation timed out, next round opens
         CaseStatus.SETTLING,
         CaseStatus.WAITING_FOR_CLAIMANT,
         CaseStatus.WAITING_FOR_RESPONDENT,
@@ -144,6 +148,8 @@ class DisputeSubmission(BaseModel):
     respondent_name: str = Field(..., min_length=2, max_length=200)
     respondent_email: str
     respondent_phone: Optional[str] = None
+    respondent_language: Optional[str] = None   # e.g. "hi"; see app/core/i18n.py
+    jurisdiction: str = "IN"                    # governing law; see app/core/jurisdictions.py
     respondent_type: RespondentType = RespondentType.INDIVIDUAL
     respondent_company_name: Optional[str] = None
     respondent_company_reg: Optional[str] = None
@@ -153,6 +159,26 @@ class DisputeSubmission(BaseModel):
     evidence_file_ids: list[str] = []
     claimant_consent: bool = False
     disclaimer_acknowledged: bool = False
+
+    @field_validator("jurisdiction")
+    @classmethod
+    def _jurisdiction(cls, v):
+        from app.core.jurisdictions import JURISDICTIONS, normalize_jurisdiction
+        code = normalize_jurisdiction(v or "IN")
+        if not code:
+            raise ValueError(f"Unsupported jurisdiction. Use one of: {', '.join(JURISDICTIONS)}")
+        return code
+
+    @field_validator("respondent_language")
+    @classmethod
+    def _language(cls, v):
+        if v in (None, ""):
+            return None
+        from app.core.i18n import LANGUAGES, normalize_language
+        lang = normalize_language(v)
+        if not lang:
+            raise ValueError(f"Unsupported language. Use one of: {', '.join(LANGUAGES)}")
+        return lang
 
 
 class CaseDocument(BaseModel):

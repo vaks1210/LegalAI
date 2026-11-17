@@ -1,4 +1,7 @@
+import hashlib
+import inspect
 import io
+from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
 import logging
 from datetime import datetime, timezone
 from reportlab.lib.pagesizes import A4
@@ -10,9 +13,10 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer,
     HRFlowable, Table, TableStyle, KeepTogether,
 )
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
 from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
+from app.core.jurisdictions import case_jurisdiction, localize_prompt, money
 
 logger = logging.getLogger(__name__)
 
@@ -51,50 +55,35 @@ async def run_document_agent(case: dict) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    try:
-        # NON-CRIMINAL: Demand Letter
-        if track != "criminal":
-            pdf_bytes = await _generate_demand_letter(case, intake, legal, analytics)
-            blob_name = f"demand_letter_{case_id}.pdf"
+    async def build(doc_type: str, result_key: str, make, expiry_hours: int, blob_prefix: str = None):
+        # Each document is independent: one failure must not skip the rest.
+        try:
+            pdf_bytes = await make() if inspect.iscoroutinefunction(make) else make()
+            blob_name = f"{blob_prefix or doc_type}_{case_id}.pdf"
             blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["demand_letter_url"] = url
-            cosmos_service.save_document_record(case_id, "demand_letter", url)
-            logger.info(f"Demand letter generated | case_id={case_id}")
+            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=expiry_hours)
+            result[result_key] = url
+            cosmos_service.save_document_record(case_id, doc_type, url)
+            logger.info(f"{doc_type} generated | case_id={case_id}")
+        except Exception as e:
+            logger.exception(f"Document Agent failed | doc={doc_type} | case_id={case_id} | error={e}")
+            result.setdefault("errors", {})[doc_type] = str(e)
 
-        # NON-CRIMINAL monetary tracks: Court File
-        if track in ["monetary_civil", "employment", "consumer"]:
-            pdf_bytes = await _generate_court_file(case, intake, legal, analytics)
-            blob_name = f"court_file_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["court_file_url"] = url
-            cosmos_service.save_document_record(case_id, "court_file", url)
-            logger.info(f"Court file generated | case_id={case_id}")
-
-        # CRIMINAL ONLY: FIR Advisory
-        if track == "criminal":
-            pdf_bytes = await _generate_fir_advisory(case, intake, legal)
-            blob_name = f"fir_advisory_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=168)
-            result["fir_advisory_url"] = url
-            cosmos_service.save_document_record(case_id, "fir_advisory", url)
-            logger.info(f"FIR advisory generated | case_id={case_id}")
-
-        # ALL NON-CRIMINAL: Mediation Certificate
-        if track != "criminal":
-            pdf_bytes = _generate_mediation_certificate(case)
-            blob_name = f"mediation_cert_{case_id}.pdf"
-            blob_service.upload("pdfs", blob_name, pdf_bytes)
-            url = blob_service.generate_download_url("pdfs", blob_name, expiry_hours=720)
-            result["mediation_certificate_url"] = url
-            cosmos_service.save_document_record(case_id, "mediation_certificate", url)
-            logger.info(f"Mediation certificate generated | case_id={case_id}")
-
-    except Exception as e:
-        logger.error(f"Document Agent failed | case_id={case_id} | error={e}")
-        result["error"] = str(e)
+    if track != "criminal":
+        async def demand():
+            return await _generate_demand_letter(case, intake, legal, analytics)
+        await build("demand_letter", "demand_letter_url", demand, 168)
+    if track in ["monetary_civil", "employment", "consumer"]:
+        async def court():
+            return await _generate_court_file(case, intake, legal, analytics)
+        await build("court_file", "court_file_url", court, 168)
+    if track == "criminal":
+        async def fir():
+            return await _generate_fir_advisory(case, intake, legal)
+        await build("fir_advisory", "fir_advisory_url", fir, 168)
+    if track != "criminal":
+        await build("mediation_certificate", "mediation_certificate_url",
+                    lambda: _generate_mediation_certificate(case), 720, blob_prefix="mediation_cert")
 
     return result
 
@@ -116,6 +105,12 @@ async def generate_settlement_agreement(case: dict, settled_amount: float) -> st
     pdf_bytes = await _generate_settlement_pdf(
         case, intake, legal, settled_amount, track
     )
+    # Fingerprint of the issued agreement: lets anyone verify later that a
+    # copy is the unaltered document both parties received.
+    cosmos_service.update_case(case_id, {
+        "settlement_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+        "settlement_generated_at": datetime.now(timezone.utc).isoformat(),
+    })
     blob_name = f"settlement_{case_id}.pdf"
     blob_service.upload("signed", blob_name, pdf_bytes)
     url = blob_service.generate_download_url("signed", blob_name, expiry_hours=720)
@@ -156,8 +151,14 @@ def _safe(text: str) -> str:
     """
     if not text:
         return ""
+    if isinstance(text, (list, tuple)):
+        text = " ".join(str(t) for t in text if t)
+    elif isinstance(text, dict):
+        text = " ".join(str(v) for v in text.values() if v)
+    elif not isinstance(text, str):
+        text = str(text)
     replacements = {
-        "\u20b9": "Rs.", "\u20ac": "EUR", "\u00a3": "GBP",
+        "\u20b9": "Rs.", "\u20ac": "EUR ", "\u00a3": "GBP ",
         "\u2019": "'",   "\u2018": "'",   "\u201c": '"',   "\u201d": '"',
         "\u2013": "-",   "\u2014": "--",  "\u2026": "...", "\u00a0": " ",
         "\u2022": "-",   "\u2192": "->",  "\u2714": "YES", "\u2718": "NO",
@@ -165,8 +166,51 @@ def _safe(text: str) -> str:
     }
     for char, replacement in replacements.items():
         text = text.replace(char, replacement)
-    # Remove any remaining non-ASCII
-    return text.encode("ascii", errors="replace").decode("ascii").replace("?", " ")
+    # Replace any remaining non-ASCII (previously done via "?" substitution,
+    # which also erased genuine question marks).
+    text = "".join(c if ord(c) < 128 else " " for c in text)
+    # ReportLab Paragraph parses its input as markup: user text containing
+    # "<" or "&" could break or inject formatting, crashing PDF generation.
+    return xml_escape(text)
+
+
+def _as_list(value) -> list:
+    """LLM content fields meant to be lists sometimes arrive as a string/None."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return [value]
+
+
+def _fmt_date(iso: str | None) -> str:
+    """Format a stored ISO timestamp like _today(); fall back to today."""
+    if iso:
+        try:
+            return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).strftime("%d %B %Y")
+        except ValueError:
+            pass
+    return _today()
+
+
+def _short(text, limit: int = 160) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "..."
+
+
+def _law_ref(law: dict) -> str:
+    """'Act — Section 73' without doubling 'Section' or labelling descriptions as sections."""
+    act = law.get("act") or "Applicable law"
+    sec = str(law.get("section") or "").strip()
+    if not sec or sec.upper() == "N/A":
+        return act
+    if sec.lower().startswith(("section", "sections", "s.", "order", "rule", "chapter")) or not sec[0].isdigit():
+        return f"{act} — {sec}"
+    return f"{act} — Section {sec}"
 
 
 def _today() -> str:
@@ -229,7 +273,7 @@ def _parties_table(case: dict) -> Table:
             Paragraph(_safe(f"{case['claimant_city']}, {case['claimant_state']}"), body),
             Paragraph(_safe(
                 case.get("respondent_company_name") or
-                f"{case.get('respondent_type','individual').title()}"
+                f"{(case.get('respondent_type') or 'individual').title()}"
             ), body),
         ],
         [
@@ -299,22 +343,40 @@ def _disclaimer_footer() -> list:
     ]
 
 
-def _append_case_record_sections(story: list, case: dict, intake: dict, legal: dict, analytics: dict | None = None):
-    story.append(_section_heading("Full Case Record"))
+def _append_case_record_sections(story: list, case: dict, intake: dict, legal: dict,
+                                 analytics: dict | None = None, shared: bool = False):
+    """
+    shared=True for documents the respondent receives (demand letter,
+    settlement agreement): omit the claimant's phone and the claimant's
+    private analysis (weaknesses, evidence gaps, anticipated defences).
+    Previously these were printed in the demand letter sent to the
+    opposing party.
+    """
+    story.append(_section_heading("Case Record" if shared else "Full Case Record"))
+    phone = "" if shared else f" | Phone: {case.get('claimant_phone', 'N/A')}"
     story.append(_body_para(
-        f"Claimant: {case.get('claimant_name')} | Email: {case.get('claimant_email')} | "
-        f"Phone: {case.get('claimant_phone', 'N/A')} | City/State: {case.get('claimant_city', 'N/A')}, {case.get('claimant_state', 'N/A')}"
+        f"Claimant: {case.get('claimant_name')} | Email: {case.get('claimant_email')}"
+        f"{phone} | City/State: {case.get('claimant_city', 'N/A')}, {case.get('claimant_state', 'N/A')}"
     ))
     story.append(_body_para(
         f"Respondent: {case.get('respondent_name')} | Email: {case.get('respondent_email')} | "
         f"Phone: {case.get('respondent_phone', 'N/A')} | Type: {case.get('respondent_type', 'N/A')}"
     ))
     story.append(_body_para(
-        f"Track: {case.get('track', 'N/A')} | Claim Amount: Rs. {(case.get('claim_amount') or 0):,.0f} | "
+        f"Track: {case.get('track', 'N/A')} | Claim: "
+        f"{money(case['claim_amount'], case) if case.get('claim_amount') else 'Non-monetary'} | "
         f"Incident Date: {case.get('incident_date') or 'Not specified'}"
     ))
     story.append(_section_heading("Dispute Narrative"))
     story.append(_body_para(case.get("dispute_text", "")))
+
+    if shared:
+        evidence_files = case.get("evidence_files", [])
+        if evidence_files:
+            story.append(_section_heading("Evidence on Record"))
+            for file_info in evidence_files[:12]:
+                story.append(_bullet(f"{file_info.get('filename')} (uploaded {str(file_info.get('uploaded_at', ''))[:10]})"))
+        return
 
     strengths = intake.get("claimant_strengths", [])
     weaknesses = intake.get("claimant_weaknesses", [])
@@ -361,6 +423,9 @@ Paragraph 5: DEMAND — State exactly what is demanded (amount/action), includin
 Paragraph 6: DEADLINE AND CLOSING — Give 15 days to comply, state consequences, and close formally.
 
 Use formal legal English. Do not use bullet points.
+The CLAIMANT signs and sends this letter personally: write in the first person as the
+claimant ("I", "me"), never "my client". Do not mark it "without prejudice" — it is a
+formal demand intended to be relied on as evidence.
 Respond ONLY in JSON:
 {
   "paragraph_1": "text",
@@ -387,7 +452,7 @@ async def _generate_demand_letter(
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute: {case['dispute_text'][:800]}
-Claim amount: Rs. {case.get('claim_amount', 'Not stated')}
+Claim amount: {money(case['claim_amount'], case) if case.get('claim_amount') else 'Not stated'}
 Incident date: {case.get('incident_date', 'Not specified')}
 Applicable laws: {[l.get('act') for l in legal.get('applicable_laws', [])[:4]]}
 Legal standing: {legal.get('legal_standing')}
@@ -397,20 +462,38 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
 
     try:
         content = openai_service.call_json(
-            system_prompt=DEMAND_LETTER_PROMPT,
+            system_prompt=localize_prompt(DEMAND_LETTER_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.3,
             max_tokens=1500,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_demand_letter", llm_err)
+        claim = case.get("claim_amount")
+        laws = [
+            f"{l.get('act')}" + (f", {l.get('section')}" if l.get("section") else "")
+            for l in _as_list(legal.get("applicable_laws")) if isinstance(l, dict) and l.get("act")
+        ][:3]
+        forum = legal.get("forum_name") or "the competent court or forum"
+        demand = (
+            f"I hereby call upon you to pay me {money(claim, case)} within "
+            f"{case_jurisdiction(case).notice_days} days of receipt of this notice."
+            if claim else
+            "I hereby call upon you to stop the conduct described above and take the steps necessary to "
+            "remedy it within 15 days of receipt of this notice."
+        )
         content = {
-            "subject_line": "Re: Legal Notice",
-            "paragraph_1":  case["dispute_text"][:400],
-            "paragraph_2":  "The respondent's actions are in violation of applicable Indian law.",
-            "paragraph_3":  f"You are hereby demanded to pay Rs. {case.get('claim_amount', 0):,.0f} within 15 days.",
-            "paragraph_4":  "Failure to comply within 15 days will compel the claimant to initiate legal proceedings.",
-            "paragraph_5":  "All rights are expressly reserved.",
+            "subject_line": f"Re: Legal Notice — {intake.get('dispute_type') or 'Dispute'}",
+            "paragraph_1":  f"I, {case['claimant_name']}, issue this notice to you concerning the following: "
+                            f"{case['dispute_text'][:600]}",
+            "paragraph_2":  ("The conduct described gives rise to liability under "
+                             + ("; ".join(laws) if laws else f"the applicable law of {case_jurisdiction(case).name}") + "."),
+            "paragraph_3":  demand,
+            "paragraph_4":  f"If you fail to comply within that period, I will proceed before {forum} "
+                            "without further notice, and will seek costs and interest as the court may allow.",
+            "paragraph_5":  "You may respond, and propose a settlement, through the secure link sent to you with "
+                            "this notice. All my rights are expressly reserved.",
         }
 
     # Build PDF
@@ -421,7 +504,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
     story.extend(_header_block(
         NAVY,
         "LEGAL NOTICE",
-        "Without Prejudice",
+        "Formal Demand Notice",
         case["id"],
     ))
 
@@ -461,12 +544,14 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
         story.append(Spacer(1, 4*mm))
         story.append(_section_heading("Laws Referenced", NAVY))
         for law in laws[:6]:
+            if not isinstance(law, dict):
+                law = {"act": str(law)}
             story.append(_bullet(
-                f"{law.get('act')} — Section {law.get('section')}: "
-                f"{law.get('relevance','')[:80]}"
+                f"{_law_ref(law)}: "
+                f"{_short(law.get('relevance'))}"
             ))
 
-    _append_case_record_sections(story, case, intake, legal, analytics)
+    _append_case_record_sections(story, case, intake, legal, analytics, shared=True)  # sent to the respondent
     story.extend(_disclaimer_footer())
     doc.build(story)
     return buf.getvalue()
@@ -520,7 +605,7 @@ Case: {case['dispute_text'][:600]}
 Claimant: {case['claimant_name']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Track: {case.get('track')}
-Claim: Rs. {case.get('claim_amount', 0):,.0f}
+Claim: {money((case.get('claim_amount') or 0), case)}
 Legal standing: {legal.get('legal_standing')}
 Forum: {legal.get('forum_name')}
 Applicable laws: {[l.get('act') + ' S.' + str(l.get('section','')) for l in legal.get('applicable_laws',[])[:5]]}
@@ -531,13 +616,14 @@ Relief available: {legal.get('relief_available', [])}
 
     try:
         content = openai_service.call_json(
-            system_prompt=COURT_FILE_PROMPT,
+            system_prompt=localize_prompt(COURT_FILE_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.2,
             max_tokens=2000,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_court_file", llm_err)
         content = {
             "case_summary":         case["dispute_text"][:300],
             "plaint_averments":     ["Facts as stated in dispute description."],
@@ -545,7 +631,7 @@ Relief available: {legal.get('relief_available', [])}
             "witness_list":         [{"role": "Claimant", "relevance": "Primary witness"}],
             "pre_filing_actions":   ["Collect all evidence", "Send legal notice"],
             "filing_steps":         ["File plaint at appropriate court"],
-            "prayer_for_relief":    [f"Payment of Rs. {case.get('claim_amount', 0):,.0f}"],
+            "prayer_for_relief":    [f"Payment of {money((case.get('claim_amount') or 0), case)}"],
             "urgent_interim_relief": False,
             "interim_relief_grounds": None,
         }
@@ -579,7 +665,7 @@ Relief available: {legal.get('relief_available', [])}
         if party_profile.get("relationship_context"):
             story.append(_bullet(f"Relationship context: {party_profile.get('relationship_context')}"))
 
-    chronology = content.get("chronology", [])
+    chronology = _as_list(content.get("chronology"))
     if chronology:
         story.append(_section_heading("Chronology", RED))
         for i, item in enumerate(chronology[:10], 1):
@@ -591,7 +677,7 @@ Relief available: {legal.get('relief_available', [])}
         ["Win Probability", f"{analytics.get('win_probability', 'N/A')}%"],
         ["Legal Standing",  legal.get("legal_standing", "N/A")],
         ["Forum",           legal.get("forum_name", "N/A")],
-        ["Court Cost Est.", f"Rs. {analytics.get('court_cost_estimate', 0):,.0f}"],
+        ["Court Cost Est.", f"{money((analytics.get('court_cost_estimate') or 0), case)}"],
         ["Time Estimate",   f"{analytics.get('time_to_resolution_months', 'N/A')} months"],
     ]
     snap_tbl = Table(snap_data, colWidths=[60*mm, 110*mm])
@@ -611,16 +697,16 @@ Relief available: {legal.get('relief_available', [])}
 
     # Plaint averments
     story.append(_section_heading("Plaint Averments", RED))
-    for i, av in enumerate(content.get("plaint_averments", []), 1):
+    for i, av in enumerate(_as_list(content.get("plaint_averments")), 1):
         story.append(_body_para(f"{i}. {av}"))
 
-    issues = content.get("issues_in_dispute", [])
+    issues = _as_list(content.get("issues_in_dispute"))
     if issues:
         story.append(_section_heading("Issues In Dispute", RED))
         for item in issues[:10]:
             story.append(_bullet(item))
 
-    defense_points = content.get("respondent_defenses", [])
+    defense_points = _as_list(content.get("respondent_defenses"))
     if defense_points:
         story.append(_section_heading("Respondent Defenses", RED))
         for item in defense_points[:10]:
@@ -628,12 +714,14 @@ Relief available: {legal.get('relief_available', [])}
 
     # Evidence checklist
     story.append(_section_heading("Evidence Checklist", RED))
-    ev_list = content.get("evidence_checklist", [])
+    ev_list = _as_list(content.get("evidence_checklist"))
     if ev_list:
         ev_data = [["Evidence Item", "Available", "Importance"]]
         for item in ev_list:
+            if not isinstance(item, dict):
+                item = {"item": str(item)}
             ev_data.append([
-                _safe(item.get("item", "")),
+                xml_unescape(_safe(item.get("item", ""))),  # plain table cell, not markup
                 "YES" if item.get("available") else "NO",
                 item.get("importance", ""),
             ])
@@ -652,30 +740,32 @@ Relief available: {legal.get('relief_available', [])}
         story.append(ev_tbl)
 
     # Witness list
-    witnesses = content.get("witness_list", [])
+    witnesses = _as_list(content.get("witness_list"))
     if witnesses:
         story.append(_section_heading("Witness List", RED))
         for w in witnesses:
+            if not isinstance(w, dict):
+                w = {"role": str(w)}
             story.append(_bullet(
                 f"{w.get('role','')}: {w.get('relevance','')}"
             ))
 
     # Pre-filing actions
-    actions = content.get("pre_filing_actions", [])
+    actions = _as_list(content.get("pre_filing_actions"))
     if actions:
         story.append(_section_heading("Pre-Filing Actions Required", RED))
         for a in actions:
             story.append(_bullet(a))
 
     # Filing steps
-    steps = content.get("filing_steps", [])
+    steps = _as_list(content.get("filing_steps"))
     if steps:
         story.append(_section_heading("Filing Steps", RED))
         for i, s in enumerate(steps, 1):
             story.append(_body_para(f"{i}. {s}"))
 
     # Prayer for relief
-    prayers = content.get("prayer_for_relief", [])
+    prayers = _as_list(content.get("prayer_for_relief"))
     if prayers:
         story.append(_section_heading("Prayer for Relief", RED))
         for p in prayers:
@@ -686,15 +776,52 @@ Relief available: {legal.get('relief_available', [])}
     if laws:
         story.append(_section_heading("Applicable Statutes", RED))
         for law in laws[:8]:
+            if not isinstance(law, dict):
+                law = {"act": str(law)}
             story.append(_bullet(
-                f"{law.get('act')} — Section {law.get('section','N/A')} "
-                f"[{law.get('strength','SUPPORTING')}]: {law.get('relevance','')[:80]}"
+                f"{_law_ref(law)} "
+                f"[{law.get('strength','SUPPORTING')}]: {_short(law.get('relevance'))}"
             ))
+
+    service = _service_of_notice(case)
+    if service:
+        story.append(_section_heading("Service of Notice on the Respondent", RED))
+        for line in service:
+            story.append(_bullet(line))
 
     _append_case_record_sections(story, case, intake, legal, analytics)
     story.extend(_disclaimer_footer())
     doc.build(story)
     return buf.getvalue()
+
+
+NOTICE_KINDS = {
+    "invite": "Dispute notice and portal link", "nudge": "Deadline reminder",
+    "proposal": "Settlement proposal", "next_round": "Next negotiation round",
+    "payment_request": "Payment request", "payment_reminder": "Payment reminder",
+}
+
+
+def _service_of_notice(case: dict) -> list[str]:
+    """Dated record of how the respondent was notified (for non-response claims)."""
+    events = []
+    for h in case.get("status_history") or []:
+        if h.get("status") == "INVITE_SENT":
+            events.append((h["at"], f"Dispute notice emailed to {case.get('respondent_email')} "
+                                    "with a personal link to the online resolution portal."))
+        elif h.get("status") == "RESPONDENT_VIEWED":
+            events.append((h["at"], "Respondent opened the case on the portal."))
+    for e in case.get("channel_log") or []:
+        if e.get("ok"):
+            events.append((e["at"], f"{NOTICE_KINDS.get(e.get('kind'), e.get('kind', 'Notice'))} sent by "
+                                    f"{'WhatsApp' if e.get('channel') == 'whatsapp' else 'SMS'} to {e.get('to')}"
+                                    + (f" (message id {e['id']})" if e.get("id") else "") + "."))
+    if not events:
+        return []
+    lines = [f"{_fmt_date(at)}: {text}" for at, text in sorted(events, key=lambda ev: ev[0])]
+    if case.get("auto_escalation_reason"):
+        lines.append(f"Outcome: {case['auto_escalation_reason']}")
+    return lines
 
 
 # ══════════════════════════════════════════════════════════════
@@ -747,6 +874,114 @@ Respond ONLY in JSON:
 """
 
 
+def _payment_schedule_clause(case: dict) -> str | None:
+    """Payment terms text when a schedule exists (always authoritative over LLM text)."""
+    plan = ((case.get("payment") or {}).get("plan")) or []
+    if not plan:
+        return None
+    if len(plan) == 1:
+        return (f"The Settlement Amount of {money(plan[0]['amount'], case)} shall be paid by "
+                f"{_fmt_date(plan[0]['due_at'])} by bank transfer, UPI or the payment link provided "
+                "through the platform. Payment is complete when the funds are received by the Claimant.")
+    lines = "; ".join(f"instalment {i['no']}: {money(i['amount'], case)} by {_fmt_date(i['due_at'])}" for i in plan)
+    return (f"The Settlement Amount shall be paid in {len(plan)} monthly instalments — {lines} — by bank "
+            "transfer, UPI or the payment links provided through the platform. If any instalment remains "
+            "unpaid for more than 7 days after its due date, the entire unpaid balance becomes immediately "
+            "due and payable, and the Claimant may enforce this Agreement for that balance.")
+
+
+def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: list) -> dict:
+    """
+    Complete clauses for when no LLM is available. (The previous fallback
+    printed "To be filled." in nine of eleven clauses, and "pay Rs. 0" for
+    non-monetary settlements.)
+    """
+    claimant, respondent = case["claimant_name"], case["respondent_name"]
+    city = case.get("claimant_city") or case.get("claimant_state") or "the Claimant's place of residence"
+    state = case.get("claimant_state") or "the Claimant's state"
+    jur = case_jurisdiction(case)
+    if actions:
+        terms = ("The Respondent shall carry out the following within 14 days of this Agreement: "
+                 + "; ".join(f"({i}) {a}" for i, a in enumerate(actions, 1)) + ".")
+        payment = "No payment is due under this Agreement; the obligations are the actions set out in Clause 4."
+    else:
+        terms = (f"The Respondent shall pay the Claimant {money(settled_amount, case)} "
+                 f"(the \"Settlement Amount\") in full and final settlement of the dispute.")
+        payment = ("The Settlement Amount shall be paid within 14 days of this Agreement by bank transfer "
+                   "or UPI to an account nominated by the Claimant in writing. Payment is complete when "
+                   "the funds are received by the Claimant.")
+    clauses = [
+        ("Recitals", f"A dispute arose between {claimant} and {respondent} concerning the matters described in "
+                     "the Case Record above. The parties took part in AI-assisted mediation on the LegalAI "
+                     "Resolver platform and have agreed to resolve the dispute on the terms below."),
+        ("Definitions", "\"Agreement\" means this settlement agreement; \"Dispute\" means the matters described "
+                        "in the Case Record; \"Effective Date\" means the date on which both parties accepted "
+                        "these terms on the platform."),
+        ("Statement of Facts and Disputed Issues",
+         "Each party maintains its own account of the Dispute. This Agreement is a compromise and records "
+         "that both parties prefer settlement to litigation."),
+        ("Settlement Terms", terms),
+        ("Payment Terms", payment),
+        ("Full and Final Release",
+         "On full performance of Clause 4, the Claimant releases the Respondent from all claims arising "
+         "out of the Dispute, and neither party shall bring further proceedings concerning it."),
+        ("No Admission of Liability",
+         "This Agreement is a compromise. Nothing in it is an admission of liability or wrongdoing by either party."),
+        ("Confidentiality and Non-Disparagement",
+         "The parties shall keep the terms of this Agreement confidential, except as required by law or to "
+         "enforce it, and shall not make disparaging public statements about each other concerning the Dispute."),
+        ("Electronic Acceptance",
+         "Both parties accepted these terms electronically on the platform. Contracts formed through "
+         f"electronic means are valid under {jur.esign_law}."),
+        ("Default",
+         "If the Respondent fails to perform Clause 4 on time, the Claimant may enforce this Agreement, or "
+         "pursue the original claim, before the competent court or forum, and may rely on this Agreement "
+         "and the mediation record as evidence."),
+        ("Governing Law and Jurisdiction",
+         f"This Agreement is governed by {jur.governing_law.format(city=city, state=state)}. "
+         f"{jur.courts.format(city=city, state=state)[0].upper() + jur.courts.format(city=city, state=state)[1:]} "
+         "have jurisdiction over any dispute arising from it. This Agreement is the entire agreement between "
+         "the parties on the Dispute."),
+    ]
+    content = {}
+    for i, (title, text) in enumerate(clauses, 1):
+        content[f"clause_{i}_title"] = title
+        content[f"clause_{i}_text"] = text
+    return content
+
+
+def _mediator_review(case: dict) -> dict:
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    rnd = next((r for r in (neg or {}).get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    return rnd.get("mediator_review") or {}
+
+
+def _acceptance_records(case: dict) -> list:
+    """Decision records (who/when/how/terms fingerprint) for the settled round."""
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    if not neg:
+        return []
+    rnd = next((r for r in neg.get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    out = []
+    for party in ("claimant", "respondent"):
+        rec = (rnd.get(party) or {}).get("decision_record")
+        if rec:
+            out.append((party, rec))
+    return out
+
+
+async def _settlement_actions(case: dict) -> list:
+    """Agreed actions for a non-monetary settlement (from the accepted round)."""
+    if case.get("track") != "non_monetary":
+        return []
+    neg = cosmos_service.get_negotiation_by_case(case["id"])
+    if not neg:
+        return []
+    rnd = next((r for r in neg.get("rounds", []) if r.get("round_number") == case.get("current_round", 1)), {})
+    actions = rnd.get("ai_proposed_actions") or (rnd.get("respondent") or {}).get("actions") or []
+    return [str(a) for a in _as_list(actions) if a]
+
+
 async def _generate_settlement_pdf(
     case: dict,
     intake: dict,
@@ -755,38 +990,37 @@ async def _generate_settlement_pdf(
     track: str,
 ) -> bytes:
     """Generate settlement agreement PDF."""
+    actions = await _settlement_actions(case)
+    agreed_on = _fmt_date(case.get("settled_at"))  # stable if regenerated later
 
     context = f"""
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute type: {intake.get('dispute_category', case.get('track'))}
-Original claim: Rs. {case.get('claim_amount', 0):,.0f}
-Agreed settlement amount: Rs. {settled_amount:,.0f}
+Original claim: {money((case.get('claim_amount') or 0), case)}
+Agreed settlement: {"; ".join(actions) if actions else f"{money(settled_amount, case)}"}
 Governing state: {case['claimant_state']}
-Settlement date: {_today()}
+Settlement date: {agreed_on}
 Track: {track}
 Key issues resolved: {legal.get('key_legal_issues', [])}
 """
 
     try:
         content = openai_service.call_json(
-            system_prompt=SETTLEMENT_PROMPT,
+            system_prompt=localize_prompt(SETTLEMENT_PROMPT, case),
             user_message=context,
             use_large_model=True,   # gpt-4o — legal drafting needs quality
             temperature=0.2,
             max_tokens=3000,
         )
-    except Exception:
-        # Basic fallback clauses
-        content = {f"clause_{i}_title": f"Clause {i}" for i in range(1, 12)}
-        content.update({f"clause_{i}_text": "To be filled." for i in range(1, 12)})
-        content["clause_3_text"] = (
-            "This agreement records the dispute background, both parties' positions, and the issues they now agree to resolve by settlement."
-        )
-        content["clause_4_text"] = (
-            f"The Respondent agrees to pay Rs. {settled_amount:,.0f} "
-            f"to the Claimant in full and final settlement of all claims."
-        )
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_settlement_pdf", llm_err)
+        content = _fallback_settlement_clauses(case, settled_amount, actions)
+
+    schedule = _payment_schedule_clause(case)
+    if schedule and not actions:
+        content["clause_5_title"] = "Payment Terms"
+        content["clause_5_text"] = schedule
 
     buf   = io.BytesIO()
     doc   = _make_doc(buf)
@@ -804,7 +1038,8 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
     # Settlement amount highlight box
     amount_data = [[
         Paragraph(
-            f"AGREED SETTLEMENT: Rs. {settled_amount:,.0f}",
+            ("AGREED SETTLEMENT: actions set out in Clause 4" if actions
+             else f"AGREED SETTLEMENT: {money(settled_amount, case)}"),
             ParagraphStyle("SA", fontName="Helvetica-Bold", fontSize=14,
                            textColor=WHITE, alignment=TA_CENTER),
         )
@@ -823,14 +1058,14 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
 
     # Preamble
     story.append(_body_para(
-        f"This Settlement Agreement (\"Agreement\") is entered into on {_today()} "
+        f"This Settlement Agreement (\"Agreement\") is entered into on {agreed_on} "
         f"between {case['claimant_name']} (\"Claimant\") and "
         f"{case['respondent_name']} (\"Respondent\") through AI-assisted mediation "
         f"conducted by LegalAI Resolver."
     ))
     story.append(Spacer(1, 3*mm))
 
-    _append_case_record_sections(story, case, intake, legal, case.get("analytics_data", {}))
+    _append_case_record_sections(story, case, intake, legal, shared=True)  # signed by both parties
 
     # 11 clauses
     for i in range(1, 12):
@@ -842,6 +1077,29 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
                 _body_para(text),
                 Spacer(1, 2*mm),
             ]))
+
+    # Evidence of consent — how each party accepted these exact terms.
+    records = _acceptance_records(case)
+    if records:
+        story.append(_section_heading("Record of Acceptance", GREEN))
+        for party, rec in records:
+            when = _fmt_date(rec.get("at"))
+            time_part = str(rec.get("at") or "")[11:19]
+            details = [f"{party.title()}: {rec.get('actor') or 'n/a'}",
+                       f"{rec.get('decision', 'ACCEPT')} on {when}{(' at ' + time_part + ' UTC') if time_part else ''}",
+                       f"via {rec.get('method') or 'platform'}"]
+            if rec.get("ip"):
+                details.append(f"IP {rec['ip']}")
+            story.append(_bullet(" | ".join(details)))
+        story.append(_body_para(
+            f"Fingerprint of the accepted terms (SHA-256): {records[0][1].get('terms_sha256', 'n/a')}"))
+        review = _mediator_review(case)
+        if review.get("reviewed_by"):
+            story.append(_body_para(
+                f"The settlement proposal was reviewed and approved by mediator {review['reviewed_by']} "
+                f"on {_fmt_date(review.get('reviewed_at'))}."))
+        elif review.get("released_without_review"):
+            story.append(_body_para("The settlement proposal was issued by the AI mediator without human review."))
 
     # Signature blocks
     story.append(Spacer(1, 8*mm))
@@ -866,9 +1124,9 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
                       ParagraphStyle("SN", fontName="Helvetica-Bold", fontSize=9)),
         ],
         [
-            Paragraph(f"Date: {_today()}",
+            Paragraph(f"Date: {agreed_on}",
                       ParagraphStyle("SD", fontName="Helvetica", fontSize=8, textColor=MUTED)),
-            Paragraph(f"Date: {_today()}",
+            Paragraph(f"Date: {agreed_on}",
                       ParagraphStyle("SD", fontName="Helvetica", fontSize=8, textColor=MUTED)),
         ],
     ]
@@ -892,12 +1150,16 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
 
 FIR_ADVISORY_PROMPT = """
 You are a senior Indian criminal lawyer providing advisory for FIR filing.
+For incidents on or after 1 July 2024 cite the Bharatiya Nyaya Sanhita (BNS) and
+Bharatiya Nagarik Suraksha Sanhita (BNSS); for earlier incidents cite the IPC/CrPC.
+Give the other code's equivalent in brackets, e.g. "BNS S.115(2) (earlier IPC 323)".
+An FIR is registered under BNSS S.173; a Zero FIR can be filed at any police station.
 
 Respond ONLY in JSON:
 {
   "advisory_summary": "2 sentences explaining situation and recommendation",
   "ipc_sections_to_cite": [
-    {"section": "IPC 323", "title": "Voluntarily causing hurt",
+    {"section": "BNS S.115(2) (earlier IPC 323)", "title": "Voluntarily causing hurt",
      "explanation": "Why this applies"}
   ],
   "fir_draft_points": [
@@ -909,8 +1171,8 @@ Respond ONLY in JSON:
   "evidence_to_collect": ["evidence 1", "evidence 2"],
   "immediate_safety_steps": ["step 1 if danger"],
   "support_resources": [
-    {"name": "Police Emergency", "contact": "100"},
-    {"name": "NCW Helpline", "contact": "181"}
+    {"name": "Emergency (ERSS)", "contact": "112"},
+    {"name": "Women Helpline", "contact": "181"}
   ],
   "mediation_note": "Why this case cannot be mediated"
 }
@@ -930,19 +1192,20 @@ Claimant: {case['claimant_name']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Criminal elements identified: {intake.get('criminal_elements', [])}
 Immediate danger: {intake.get('immediate_danger', False)}
-IPC sections: {legal.get('ipc_sections', [])}
+Criminal law sections (BNS / IPC): {legal.get('ipc_sections', [])}
 Recommended authority: {intake.get('recommended_authority', 'local_police')}
 """
 
     try:
         content = openai_service.call_json(
-            system_prompt=FIR_ADVISORY_PROMPT,
+            system_prompt=localize_prompt(FIR_ADVISORY_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.2,
             max_tokens=2000,
         )
-    except Exception:
+    except Exception as llm_err:
+        log_llm_fallback(logger, "Document _generate_fir_advisory", llm_err)
         content = {
             "advisory_summary":    "This case involves criminal elements requiring police intervention.",
             "ipc_sections_to_cite": legal.get("ipc_sections", []),
@@ -952,8 +1215,8 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
             "evidence_to_collect": ["All relevant documents", "Photographs if any"],
             "immediate_safety_steps": ["Contact police if in immediate danger"],
             "support_resources": [
-                {"name": "Police Emergency", "contact": "100"},
-                {"name": "NCW Helpline", "contact": "181"},
+                {"name": "Emergency (ERSS)", "contact": "112"},
+                {"name": "Women Helpline", "contact": "181"},
             ],
             "mediation_note": "Criminal matters cannot be mediated.",
         }
@@ -992,51 +1255,53 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
     story.append(_body_para(content.get("advisory_summary", "")))
 
     # IPC Sections
-    ipc_sections = content.get("ipc_sections_to_cite", [])
+    ipc_sections = _as_list(content.get("ipc_sections_to_cite"))
     if ipc_sections:
-        story.append(_section_heading("Applicable IPC Sections", ORANGE))
+        story.append(_section_heading("Applicable Criminal Law Sections (BNS / earlier IPC)", ORANGE))
         for sec in ipc_sections:
             if isinstance(sec, dict):
                 story.append(_bullet(
                     f"{sec.get('section','')}: {sec.get('title','')} — "
-                    f"{sec.get('explanation','')[:100]}"
+                    f"{_short(sec.get('explanation'))}"
                 ))
             else:
                 story.append(_bullet(str(sec)))
 
     # FIR draft points
-    fir_points = content.get("fir_draft_points", [])
+    fir_points = _as_list(content.get("fir_draft_points"))
     if fir_points:
         story.append(_section_heading("Key Points to Include in FIR", ORANGE))
         for i, pt in enumerate(fir_points, 1):
             story.append(_body_para(f"{i}. {pt}"))
 
     # Filing steps
-    steps = content.get("filing_steps", [])
+    steps = _as_list(content.get("filing_steps"))
     if steps:
         story.append(_section_heading("Filing Steps", ORANGE))
         for i, s in enumerate(steps, 1):
             story.append(_body_para(f"{i}. {s}"))
 
     # Evidence to collect
-    evidence = content.get("evidence_to_collect", [])
+    evidence = _as_list(content.get("evidence_to_collect"))
     if evidence:
         story.append(_section_heading("Evidence to Collect Before Filing", ORANGE))
         for ev in evidence:
             story.append(_bullet(ev))
 
     # Immediate safety steps
-    safety = content.get("immediate_safety_steps", [])
+    safety = _as_list(content.get("immediate_safety_steps"))
     if safety:
         story.append(_section_heading("Immediate Safety Steps", RED))
         for s in safety:
             story.append(_bullet(s))
 
     # Support resources
-    resources = content.get("support_resources", [])
+    resources = _as_list(content.get("support_resources"))
     if resources:
         story.append(_section_heading("Support Resources", ORANGE))
         for r in resources:
+            if not isinstance(r, dict):
+                r = {"name": str(r)}
             if isinstance(r, dict):
                 story.append(_bullet(f"{r.get('name','')}: {r.get('contact','')}"))
 
@@ -1081,7 +1346,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
         f"{case['respondent_name']} (Respondent) were involved in a dispute "
         f"regarding {case['dispute_text'][:150]}... and that a formal pre-litigation "
         f"mediation attempt was conducted through LegalAI Resolver, an AI-powered "
-        f"dispute resolution platform, on {_today()}."
+        f"dispute resolution platform, between {_fmt_date(case.get('created_at'))} and {_today()}."
     )
     story.append(_body_para(cert_text))
     story.append(Spacer(1, 4*mm))
@@ -1095,11 +1360,11 @@ def _generate_mediation_certificate(case: dict) -> bytes:
 
     details = [
         ["Case Reference",  case["id"][:8].upper()],
-        ["Case Track",      case.get("track", "N/A").replace("_", " ").title()],
-        ["Claim Amount",    f"Rs. {case.get('claim_amount', 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
+        ["Case Track",      (case.get("track") or "N/A").replace("_", " ").title()],
+        ["Claim Amount",    f"{money((case.get('claim_amount') or 0), case)}" if case.get("claim_amount") else "Non-monetary"],
         ["Claimant",        case["claimant_name"]],
         ["Respondent",      case["respondent_name"]],
-        ["Date Initiated",  _today()],
+        ["Date Initiated",  _fmt_date(case.get("created_at"))],
         ["Platform",        "LegalAI Resolver"],
     ]
     det_tbl = Table(details, colWidths=[60*mm, 100*mm])
@@ -1160,28 +1425,28 @@ async def _generate_breach_notice_pdf(case: dict) -> bytes:
 
     story.append(_body_para(
         f"This notice is issued pursuant to the Settlement Agreement executed "
-        f"between the parties on {_today()} (Case Reference: "
+        f"between the parties on {_fmt_date(case.get('settled_at'))} (Case Reference: "
         f"{case['id'][:8].upper()}) through LegalAI Resolver."
     ))
 
     story.append(_body_para(
         f"Under the terms of the executed Settlement Agreement, you agreed to pay "
-        f"a sum of Rs. {case.get('settled_amount', 0):,.0f} to "
+        f"a sum of {money((case.get('settled_amount') or 0), case)} to "
         f"{case['claimant_name']} (Claimant) within the stipulated payment period. "
         f"As of {_today()}, the said payment has not been received by the Claimant."
     ))
 
     story.append(_body_para(
         "Your failure to honor the executed Settlement Agreement constitutes a "
-        "breach of contract under the Indian Contract Act 1872 and provides the "
+        f"breach of contract under {case_jurisdiction(case).contract_law} and provides the "
         "Claimant with the right to seek enforcement through appropriate legal "
         "proceedings, including but not limited to filing a civil suit for recovery "
         "of the settled amount along with interest, costs, and damages."
     ))
 
     story.append(_body_para(
-        f"You are hereby called upon to make payment of Rs. "
-        f"{case.get('settled_amount', 0):,.0f} within 7 days of receipt of this "
+        f"You are hereby called upon to make payment of "
+        f"{money(case.get('settled_amount') or 0, case)} within 7 days of receipt of this "
         "notice. Failure to comply will leave the Claimant with no alternative but "
         "to initiate legal proceedings for enforcement of the Settlement Agreement, "
         "which will be submitted to the appropriate court as binding evidence of "

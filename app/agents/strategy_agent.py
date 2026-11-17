@@ -1,6 +1,8 @@
 import logging
 
-from app.services.openai_service import openai_service
+from app.services.openai_service import log_llm_fallback, openai_service
+from app.core.jurisdictions import localize_prompt
+from app.core.jurisdictions import money
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +88,7 @@ def generate_case_strategy(case: dict) -> dict:
     statutory_floor = ""
     if track == "employment":
         floor = legal.get("total_statutory_dues", 0) or 0
-        statutory_floor = f"\n- Statutory dues floor (NEVER accept below): Rs. {floor:,.0f}"
+        statutory_floor = f"\n- Statutory dues floor (NEVER accept below): {money(floor, case)}"
 
     user_message = f"""
 Build a winning case strategy for this claimant. Be specific to these facts.
@@ -96,7 +98,7 @@ CASE DETAILS:
 - Track: {track}
 - Claimant: {case.get('claimant_name')} | {case.get('claimant_state')}
 - Respondent: {case.get('respondent_name')} ({case.get('respondent_type', 'individual')})
-- Original claim: Rs. {claim:,.0f}
+- Original claim: {money(claim, case)}
 - Incident date: {case.get('incident_date', 'Not specified')}
 
 INTAKE ANALYSIS:
@@ -120,10 +122,10 @@ LEGAL ANALYSIS:
 
 ANALYTICS:
 - Win probability: {analytics.get('win_probability', 'N/A')}%
-- ZOPA floor (minimum to accept): Rs. {zopa_min:,.0f}
-- ZOPA optimal (fair settlement): Rs. {zopa_opt:,.0f}
-- ZOPA ceiling (maximum likely): Rs. {zopa_max:,.0f}
-- Court cost estimate: Rs. {analytics.get('court_cost_estimate', 0):,.0f}
+- ZOPA floor (minimum to accept): {money(zopa_min, case)}
+- ZOPA optimal (fair settlement): {money(zopa_opt, case)}
+- ZOPA ceiling (maximum likely): {money(zopa_max, case)}
+- Court cost estimate: {money((analytics.get('court_cost_estimate') or 0), case)}
 - Time to court judgment: {analytics.get('time_to_resolution_months', 'N/A')} months
 - Payment recovery probability: {analytics.get('payment_recovery_probability', 'N/A')}%{statutory_floor}
 
@@ -134,7 +136,7 @@ where to open in negotiation, and what the backup court plan is.
 
     try:
         result = openai_service.call_json(
-            system_prompt=STRATEGY_PROMPT,
+            system_prompt=localize_prompt(STRATEGY_PROMPT, case),
             user_message=user_message,
             use_large_model=True,
             temperature=0.3,
@@ -145,7 +147,10 @@ where to open in negotiation, and what the backup court plan is.
         for field in ["what_to_say", "evidence_to_gather", "mistakes_to_avoid",
                       "court_backup_plan", "proof_gaps_to_fix_first",
                       "pressure_points", "what_not_to_say"]:
-            if not isinstance(result.get(field), list):
+            value = result.get(field)
+            if isinstance(value, str) and value.strip():
+                result[field] = [value.strip()]   # keep the model's content
+            elif not isinstance(value, list):
                 result[field] = []
 
         if not result.get("best_next_action"):
@@ -171,10 +176,7 @@ where to open in negotiation, and what the backup court plan is.
         return result
 
     except Exception as exc:
-        logger.error(
-            "Strategy agent failed | case_id=%s | error=%s",
-            case.get("id"), exc
-        )
+        log_llm_fallback(logger, "Strategy Agent", exc, case_id=case.get("id"))
         return _fallback_strategy(case, intake, legal, analytics)
 
 
@@ -195,7 +197,7 @@ def _fallback_strategy(case: dict, intake: dict, legal: dict, analytics: dict) -
         "what_to_say": [
             "Open by stating the specific amount owed and the date it became due — be precise.",
             f"Reference your key document (e.g. contract, payslip, order confirmation) as the legal anchor.",
-            f"Mention that going to court would cost approximately Rs. {analytics.get('court_cost_estimate', 75000):,.0f} and take {analytics.get('time_to_resolution_months', 30)} months — the respondent faces the same cost.",
+            f"Mention that going to court would cost approximately {money((analytics.get('court_cost_estimate') or 75000), case)} and take {analytics.get('time_to_resolution_months', 30)} months — the respondent faces the same cost.",
             "Close by proposing a specific amount and a specific payment timeline.",
         ],
         "what_not_to_say": [
@@ -219,11 +221,11 @@ def _fallback_strategy(case: dict, intake: dict, legal: dict, analytics: dict) -
             "Legal interest at 18% per annum accrues from the default date.",
         ],
         "when_to_use_pressure": "If respondent offers less than 50% of claim by round 2, escalate tone and reference court consequences explicitly.",
-        "best_settlement_range": f"Floor: Rs. {zopa_min:,.0f} | Target: Rs. {analytics.get('zopa_optimal', claim):,.0f}",
-        "opening_ask_recommendation": f"Open at your full claim of Rs. {claim:,.0f} in round 1 to anchor the negotiation.",
+        "best_settlement_range": f"Floor: {money(zopa_min, case)} | Target: {money((analytics.get('zopa_optimal') or claim), case)}",
+        "opening_ask_recommendation": f"Open at your full claim of {money(claim, case)} in round 1 to anchor the negotiation.",
         "court_backup_plan": [
             f"Send formal legal notice by registered post to {case.get('respondent_name')} within 7 days of failed mediation.",
-            f"File in {legal.get('forum_name', 'the appropriate court')} — estimated filing fee Rs. {analytics.get('court_cost_estimate', 50000) * 0.1:,.0f}.",
+            f"File in {legal.get('forum_name', 'the appropriate court')} — estimated filing fee {money(analytics.get('court_cost_estimate', 50000) * 0.1, case)}.",
             "Submit this mediation certificate as evidence of pre-litigation good faith attempt.",
         ],
         "best_next_action": (

@@ -2,10 +2,14 @@
 End-to-end test covering the complete happy path:
 Submit -> Analyze -> Invite -> Negotiate -> Settle -> Download PDF
 
-Run with: python tests/test_health.py
-Requires: Azure services plus SendGrid configured in .env.local
+Run with:
+    SMOKE_CLAIMANT_EMAIL=you@example.com SMOKE_RESPONDENT_EMAIL=other@example.com \
+    python scripts/smoke_test_live.py
+Targets a running server (SMOKE_BASE_URL, default http://localhost:8000).
+For a fully offline check use the pytest suite instead: pytest -q
 """
 import asyncio
+import os
 import sys
 
 import httpx
@@ -13,9 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.local")
 
-BASE = "http://localhost:8000"
-CLAIMANT_EMAIL = "gunanimohit1221@gmail.com"
-RESPONDENT_EMAIL = "aigunani744@gmail.com"
+BASE = os.getenv("SMOKE_BASE_URL", "http://localhost:8000")
+CLAIMANT_EMAIL = os.getenv("SMOKE_CLAIMANT_EMAIL", "claimant@example.com")
+RESPONDENT_EMAIL = os.getenv("SMOKE_RESPONDENT_EMAIL", "respondent@example.com")
 CLIENT_TIMEOUT = httpx.Timeout(connect=30.0, read=300.0, write=60.0, pool=60.0)
 
 
@@ -48,7 +52,7 @@ async def run():
         })
         _assert(r.status_code == 200, "request-otp failed", r)
         print(f"    OK OTP email sent to {CLAIMANT_EMAIL}")
-        otp = input("    OTP > ").strip()
+        otp = r.json().get("dev_otp") or input("    OTP > ").strip()
 
         print("\n[3] Verifying OTP...")
         r = await client.post("/api/auth/verify-otp", json={

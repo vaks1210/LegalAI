@@ -1,7 +1,7 @@
 import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 from app.core.security import decode_token
 from app.services.cosmos_service import cosmos_service
 

@@ -8,6 +8,11 @@ logger = logging.getLogger(__name__)
 
 
 STAGE_DEADLINES = {
+    # Short "watchdog" deadlines for in-flight work: if the server restarts
+    # (e.g. a deploy) mid-task, the expiry worker resumes it.
+    CaseStatus.ANALYZING: 1,
+    CaseStatus.MEDIATOR_REVIEW: 1,
+    CaseStatus.ESCALATING: 1,
     CaseStatus.INVITE_SENT: 7 * 24,
     CaseStatus.RESPONDENT_VIEWED: 5 * 24,
     CaseStatus.NEGOTIATION_OPEN: 3 * 24,
@@ -17,7 +22,7 @@ STAGE_DEADLINES = {
     CaseStatus.PROOF_RESPONSE_PENDING: 3 * 24,
     CaseStatus.PROPOSAL_ISSUED: 2 * 24,
     CaseStatus.SETTLEMENT_PENDING_CONFIRMATION: 2 * 24,
-    CaseStatus.SETTLING: 14 * 24,
+    CaseStatus.SETTLING: 1,  # transient: resume an interrupted settlement
     CaseStatus.ANALYZED: 14 * 24,
 }
 
@@ -35,6 +40,9 @@ def transition(case: dict, new_status: CaseStatus) -> dict:
     now = datetime.now(timezone.utc)
     case["status"] = new_status.value
     case["updated_at"] = now.isoformat()
+    history = case.setdefault("status_history", [])
+    history.append({"status": new_status.value, "at": now.isoformat()})
+    del history[:-60]
 
     deadline_hours = STAGE_DEADLINES.get(new_status)
     case["current_deadline"] = (

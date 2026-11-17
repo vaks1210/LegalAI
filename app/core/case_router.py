@@ -58,6 +58,16 @@ Respond ONLY in this exact JSON. No text outside JSON.
 """
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "y", "1")
+    return False
+
+
 def route_case(
     dispute_text: str,
     claim_amount: float | None,
@@ -100,8 +110,22 @@ Classify this dispute into exactly one track.
             if field not in result:
                 result[field] = None
 
-        if result.get("criminal_elements") is None:
-            result["criminal_elements"] = []
+        # LLMs sometimes answer booleans as strings ("no" is truthy in Python,
+        # which wrongly forced civil disputes into the criminal track).
+        for flag in ("is_criminal", "is_monetary", "respondent_is_company"):
+            result[flag] = _as_bool(result.get(flag))
+        elements = result.get("criminal_elements")
+        if isinstance(elements, str):
+            elements = [] if elements.strip().lower() in ("", "none", "no", "n/a", "[]") else [elements]
+        result["criminal_elements"] = elements if isinstance(elements, list) else []
+
+        # An LLM reply without a valid track (or with a bogus one) must not
+        # leave the case untracked — that skips the criminal safety routing.
+        valid_tracks = {"monetary_civil", "non_monetary", "employment", "consumer", "criminal"}
+        if result.get("track") not in valid_tracks:
+            logger.warning(f"Router LLM returned invalid track {result.get('track')!r} — using rule-based routing")
+            from app.agents import offline_analysis
+            return offline_analysis.route(dispute_text, claim_amount, respondent_type, claimant_state)
 
         # Safety override — if criminal elements found, force criminal track
         if result.get("is_criminal") and result.get("track") != "criminal":
@@ -119,17 +143,9 @@ Classify this dispute into exactly one track.
         return result
 
     except Exception as e:
-        logger.error(f"Case router failed: {e}")
-        # Safe fallback — never crash the submission
-        return {
-            "track":               "monetary_civil",
-            "confidence":          0.3,
-            "is_criminal":         False,
-            "is_monetary":         True if claim_amount else False,
-            "respondent_is_company": respondent_type == "company",
-            "dispute_category":    "other",
-            "jurisdiction_state":  claimant_state,
-            "estimated_claim_amount": claim_amount,
-            "criminal_elements":   [],
-            "routing_notes":       "Router failed — fallback classification applied",
-        }
+        from app.services.openai_service import log_llm_fallback
+        log_llm_fallback(logger, "Case router", e)
+        # Rule-based routing still detects criminal red flags, so violent or
+        # criminal matters are never sent to mediation when the LLM is down.
+        from app.agents import offline_analysis
+        return offline_analysis.route(dispute_text, claim_amount, respondent_type, claimant_state)

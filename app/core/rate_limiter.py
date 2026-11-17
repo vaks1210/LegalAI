@@ -1,7 +1,8 @@
 import time
 import logging
 from collections import defaultdict
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -49,13 +50,17 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                     f"Rate limit exceeded | ip={client_ip} | path={path} | "
                     f"count={len(self._requests[key])} | limit={max_req}/{window}s"
                 )
-                raise HTTPException(
+                # An HTTPException raised inside BaseHTTPMiddleware is not
+                # handled by FastAPI and surfaces as a 500 — return the 429.
+                retry_after = int(window - (now - self._requests[key][0])) + 1
+                return JSONResponse(
                     status_code=429,
-                    detail=(
+                    headers={"Retry-After": str(max(retry_after, 1))},
+                    content={"detail": (
                         f"Too many requests. Maximum {max_req} requests "
                         f"per {window} seconds for this endpoint. "
                         f"Please wait and try again."
-                    ),
+                    )},
                 )
 
             self._requests[key].append(now)
@@ -64,12 +69,23 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
     def _get_client_ip(self, request: Request) -> str:
         """
-        Azure App Service passes real client IP in X-Forwarded-For.
-        Fall back to direct connection IP.
+        Client IP for rate limiting. X-Forwarded-For is client-controlled
+        except for the entries appended by our own proxies, so take the
+        entry added by the outermost trusted proxy (counting from the
+        right). The first entry — used previously — can be set to any value
+        by the caller, which let rate limits be bypassed by rotating it.
         """
+        from app.config import settings
+        hops = settings.TRUSTED_PROXY_COUNT
         forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        if forwarded and hops > 0:
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if len(parts) >= hops:
+                ip = parts[-hops]
+                # Azure may append "ip:port"; strip a port from IPv4 values.
+                if ip.count(":") == 1:
+                    ip = ip.split(":")[0]
+                return ip
         if request.client:
             return request.client.host
         return "unknown"
