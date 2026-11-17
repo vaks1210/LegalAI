@@ -619,6 +619,16 @@ async def proposal_response(
         }
 
     # Record ONLY this party's decision, atomically (see record_offer).
+    # The respondent may choose a pre-approved instalment plan when accepting.
+    if body.party == "respondent" and body.decision == ProposalDecision.ACCEPT and (body.installments or 1) > 1:
+        from app.services import payments as _payments
+        amount = round_doc.get("settlement_candidate_amount") or round_doc.get("ai_proposed_amount") or 0
+        try:
+            n = _payments.validate_installments(case, amount, body.installments)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        cosmos_service.update_case(body.case_id, {"payment_plan_request": {"installments": n, "requested_at": _now()}})
+
     actor = (current_user or {}).get("email") if body.party == "claimant" else case["respondent_email"]
     method = "logged-in account" if body.party == "claimant" else "signed respondent link"
 
@@ -726,6 +736,13 @@ async def _handle_settlement(case_id: str):
         # render. Previously a PDF failure left it in SETTLING, which the
         # expiry worker later treated as a payment breach. The agreement can
         # be regenerated on demand from the documents endpoint.
+        # Payment schedule first, so the agreement can state it.
+        try:
+            from app.services import payments as _payments
+            _payments.create_payment_request(cosmos_service.get_case(case_id))
+            case = cosmos_service.get_case(case_id)
+        except Exception:
+            logger.exception(f"Payment schedule failed | case_id={case_id}")
         try:
             settlement_url = await generate_settlement_agreement(case, settled_amount)
         except Exception as pdf_err:
@@ -774,6 +791,7 @@ def _request_payment(case_id: str) -> None:
         if not payment or payment.get("status") == "paid":
             return
         due = (payment.get("due_at") or "")[:10]
+        plan = payment.get("plan") or []
         if payment.get("link_url"):
             how, link, label = "Pay securely online using the link below.", payment["link_url"], "Pay now"
         else:
@@ -786,9 +804,15 @@ def _request_payment(case_id: str) -> None:
             link, label = _portal_url(case, "respondent"), "View settlement"
         email_service.send_case_update(
             to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case_id,
-            headline=f"Payment due: Rs. {payment['amount']:,.0f} by {due}",
-            summary=f"Under your settlement agreement, Rs. {payment['amount']:,.0f} is due to "
-                    f"{case['claimant_name']} by {due}. {how}",
+            headline=(f"Payment due: Rs. {payment['amount']:,.0f} by {due}" if len(plan) <= 1 else
+                      f"Payment plan: {len(plan)} instalments, first Rs. {plan[0]['amount']:,.0f} due {due}"),
+            summary=(f"Under your settlement agreement, Rs. {payment['amount']:,.0f} is due to "
+                     f"{case['claimant_name']} by {due}. {how}" if len(plan) <= 1 else
+                     f"Under your settlement agreement you pay {case['claimant_name']} Rs. {payment['amount']:,.0f} in "
+                     f"{len(plan)} monthly instalments: " +
+                     "; ".join(f"Rs. {i['amount']:,.0f} by {i['due_at'][:10]}" for i in plan) + f". {how} "
+                     "We will remind you before each due date. Missing one by more than 7 days makes the "
+                     "full balance due."),
             portal_url=link, action_label=label,
         )
     except Exception:

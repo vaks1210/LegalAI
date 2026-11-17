@@ -305,6 +305,8 @@ async def start_expiry_worker():
         try:
             # Blocking DB/PDF/email work — keep it off the request event loop.
             await asyncio.to_thread(lambda: asyncio.run(run_expiry_check()))
+            from app.services.payments import check_payment_schedules
+            await asyncio.to_thread(check_payment_schedules)
         except Exception as e:
             logger.error(f"Expiry worker error: {e}")
         await asyncio.sleep(3600)

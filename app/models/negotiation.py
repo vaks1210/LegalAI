@@ -105,6 +105,7 @@ class ProposalResponseRequest(BaseModel):
     party: str
     reason: Optional[str] = Field(default=None, max_length=1000)
     respondent_token: Optional[str] = None
+    installments: Optional[int] = Field(default=None, ge=1, le=24)
 
 
 class ProofResponseRequest(BaseModel):

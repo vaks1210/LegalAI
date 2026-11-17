@@ -431,6 +431,7 @@ async def confirm_payment(
     case_id: str,
     honored: bool,
     background_tasks: BackgroundTasks,
+    installment: int | None = None,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -451,7 +452,11 @@ async def confirm_payment(
 
     if honored:
         from app.services import payments
-        payments.mark_paid(case_id, "claimant")
+        updated = payments.mark_paid(case_id, "claimant", installment_no=installment)
+        pay = updated.get("payment") or {}
+        if pay.get("status") != "paid":
+            return {"message": f"Payment recorded. Rs. {pay.get('amount', 0) - pay.get('paid_amount', 0):,.0f} "
+                               "remains under the instalment plan.", "outcome": "PARTIALLY_PAID"}
         return {"message": "Payment confirmed. Case fully resolved.", "outcome": "PAYMENT_RECEIVED"}
 
     background_tasks.add_task(in_thread(_generate_and_send_breach_notice), case_id)

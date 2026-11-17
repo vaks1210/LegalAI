@@ -159,12 +159,18 @@ class Payee(BaseModel):
     bank:           str = Field(default="", max_length=80)
 
 
+class InstalmentPolicy(BaseModel):
+    max:        int   = Field(default=1, ge=1, le=24)
+    min_amount: float = Field(default=0, ge=0)
+
+
 class OrgUpdate(BaseModel):
     name:          str | None = Field(default=None, min_length=2, max_length=120)
     contact_email: str | None = None
     profile:       OrgProfile | None = None
     auto_invite:   bool | None = None
     require_mediator_review: bool | None = None
+    installments:  InstalmentPolicy | None = None
     payee:         Payee | None = None
 
 
@@ -181,6 +187,8 @@ async def update_org(body: OrgUpdate, actor: OrgActor = Depends(org_actor)):
             org["profile"] = body.profile.model_dump()
         if body.auto_invite is not None:
             org.setdefault("settings", {})["auto_invite"] = body.auto_invite
+        if body.installments is not None:
+            org.setdefault("settings", {})["installments"] = body.installments.model_dump()
         if body.require_mediator_review is not None:
             org.setdefault("settings", {})["require_mediator_review"] = body.require_mediator_review
         if body.payee is not None:

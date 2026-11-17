@@ -837,6 +837,22 @@ Respond ONLY in JSON:
 """
 
 
+def _payment_schedule_clause(case: dict) -> str | None:
+    """Payment terms text when a schedule exists (always authoritative over LLM text)."""
+    plan = ((case.get("payment") or {}).get("plan")) or []
+    if not plan:
+        return None
+    if len(plan) == 1:
+        return (f"The Settlement Amount of Rs. {plan[0]['amount']:,.0f} shall be paid by "
+                f"{_fmt_date(plan[0]['due_at'])} by bank transfer, UPI or the payment link provided "
+                "through the platform. Payment is complete when the funds are received by the Claimant.")
+    lines = "; ".join(f"instalment {i['no']}: Rs. {i['amount']:,.0f} by {_fmt_date(i['due_at'])}" for i in plan)
+    return (f"The Settlement Amount shall be paid in {len(plan)} monthly instalments — {lines} — by bank "
+            "transfer, UPI or the payment links provided through the platform. If any instalment remains "
+            "unpaid for more than 7 days after its due date, the entire unpaid balance becomes immediately "
+            "due and payable, and the Claimant may enforce this Agreement for that balance.")
+
+
 def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: list) -> dict:
     """
     Complete clauses for when no LLM is available. (The previous fallback
@@ -959,6 +975,11 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
     except Exception as llm_err:
         log_llm_fallback(logger, "Document _generate_settlement_pdf", llm_err)
         content = _fallback_settlement_clauses(case, settled_amount, actions)
+
+    schedule = _payment_schedule_clause(case)
+    if schedule and not actions:
+        content["clause_5_title"] = "Payment Terms"
+        content["clause_5_text"] = schedule
 
     buf   = io.BytesIO()
     doc   = _make_doc(buf)

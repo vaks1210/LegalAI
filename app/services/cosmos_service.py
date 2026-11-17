@@ -444,6 +444,13 @@ class CosmosService:
             neg_id, lambda neg: neg.setdefault("shared_notes", []).append(note)
         )
 
+    def get_cases_with_open_payments(self) -> list:
+        open_states = ("pending", "partially_paid")
+        if self.local:
+            return self.cases.find(lambda c: (c.get("payment") or {}).get("status") in open_states)
+        q = "SELECT * FROM c WHERE c.payment.status IN ('pending', 'partially_paid')"
+        return list(self.cases.query_items(query=q, enable_cross_partition_query=True))
+
     def find_case_by_settlement_hash(self, sha256: str) -> Optional[dict]:
         if self.local:
             r = self.cases.find(lambda c: c.get("settlement_sha256") == sha256)

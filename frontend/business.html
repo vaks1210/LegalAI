@@ -215,6 +215,12 @@
         <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:14px;">
           <input type="checkbox" id="sAutoInvite" style="width:auto;"> By default, invite respondents automatically after analysis
         </label>
+        <h3>Instalment plans</h3>
+        <p class="muted">Let respondents choose to pay a settlement in monthly instalments within these limits. Missing an instalment by more than 7 days makes the full balance due.</p>
+        <div class="row">
+          <div><label>Maximum instalments (1 = no plans)</label><input id="sMaxInst" type="number" min="1" max="24"></div>
+          <div><label>Minimum per instalment (Rs.)</label><input id="sMinInst" type="number" min="0"></div>
+        </div>
         <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:8px;">
           <input type="checkbox" id="sMediator" style="width:auto;"> Require a human mediator to approve every AI settlement proposal
         </label>
@@ -388,7 +394,9 @@ async function openCase(id) {
     <p class="muted">${c.respondent_email} · Claim ${rs(c.claim_amount)}${c.settled_amount ? ' · Settled ' + rs(c.settled_amount) : ''}</p>
     ${c.payment ? `<p style="margin-top:6px;">Payment: ${c.payment.status === 'paid'
         ? `<span class="badge good">Paid ${rs(c.payment.amount)}</span> <span class="muted">${(c.payment.paid_at || '').slice(0,10)} · ${c.payment.confirmed_by}</span>`
-        : `<span class="badge wait">Due ${rs(c.payment.amount)} by ${(c.payment.due_at || '').slice(0,10)}</span>
+        : c.payment.status === 'defaulted'
+        ? `<span class="badge bad">Defaulted — ${rs(c.payment.balance_due)} due</span>`
+        : `<span class="badge wait">${(c.payment.plan || []).length > 1 ? `Paid ${rs(c.payment.paid_amount)} of ${rs(c.payment.amount)} · next ${rs(c.payment.next_amount)}` : 'Due ' + rs(c.payment.amount)} by ${(c.payment.due_at || '').slice(0,10)}</span>
            ${c.payment.link_url ? `<a href="${c.payment.link_url}" target="_blank" rel="noopener">payment link</a>` : ''}`}</p>` : ''}
     <h3>Dispute</h3><p style="font-size:14px;line-height:1.6;">${c.dispute_text}</p>
     <h3>Analysis</h3><p style="font-size:14px;">${(c.intake_data || {}).dispute_type || '—'} · Legal standing
@@ -463,11 +471,14 @@ function renderSettings() {
   $('pAcct').value = unesc(p.account_number); $('pIfsc').value = unesc(p.ifsc); $('pBank').value = unesc(p.bank);
   $('sAutoInvite').checked = !!org.settings?.auto_invite;
   $('sMediator').checked = !!org.settings?.require_mediator_review;
+  $('sMaxInst').value = org.settings?.installments?.max || 1;
+  $('sMinInst').value = org.settings?.installments?.min_amount || 0;
 }
 async function saveSettings() {
   try {
     org = (await axios.patch(`${API}/api/orgs/${org.id}`, {
       auto_invite: $('sAutoInvite').checked, require_mediator_review: $('sMediator').checked,
+      installments: { max: Number($('sMaxInst').value || 1), min_amount: Number($('sMinInst').value || 0) },
       payee: { upi_id: $('pUpi').value.trim(), account_name: $('pName').value.trim(),
                account_number: $('pAcct').value.trim(), ifsc: $('pIfsc').value.trim().toUpperCase(),
                bank: $('pBank').value.trim() } }, auth())).data;

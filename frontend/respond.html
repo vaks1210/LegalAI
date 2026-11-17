@@ -401,11 +401,18 @@ function renderActionPanel(ng, c) {
           This case has been ${status.toLowerCase().replace('_',' ')}.
         </div>
         ${c.settlement_url ? `<a class="btn btn-green btn-full" href="${c.settlement_url}" target="_blank" rel="noopener noreferrer">Download Settlement Agreement</a>` : ''}
-        ${c.payment && c.payment.status !== 'paid' ? `
+        ${c.payment && c.payment.status === 'defaulted' ? `<p style="margin-top:12px;color:var(--red);font-weight:700;">A payment was missed by more than 7 days. The full unpaid balance of Rs. ${Number(c.payment.balance_due || 0).toLocaleString('en-IN')} is now due.</p>` : ''}
+        ${c.payment && !['paid','defaulted'].includes(c.payment.status) ? `
           <div class="card" style="margin-top:14px;">
             <div class="card-title">Payment due</div>
-            <p style="font-size:15px;"><b>Rs. ${Number(c.payment.amount).toLocaleString('en-IN')}</b>
-              by <b>${(c.payment.due_at || '').slice(0, 10)}</b> — quote reference <b>${c.payment.reference}</b>.</p>
+            ${(c.payment.plan || []).length > 1
+              ? `<p style="font-size:15px;">Rs. ${Number(c.payment.amount).toLocaleString('en-IN')} in ${c.payment.plan.length} instalments — quote reference <b>${c.payment.reference}</b>.</p>
+                 <table style="width:100%;font-size:14px;margin-top:8px;border-collapse:collapse;">${c.payment.plan.map(i => `
+                   <tr style="border-bottom:1px solid #E2E8F0;"><td style="padding:6px 0;">#${i.no}</td>
+                   <td>Rs. ${Number(i.amount).toLocaleString('en-IN')}</td><td>${(i.due_at || '').slice(0, 10)}</td>
+                   <td>${i.status === 'paid' ? '<b style="color:var(--green);">Paid</b>' : (i.link_url ? `<a href="${i.link_url}" target="_blank" rel="noopener noreferrer">Pay</a>` : 'Due')}</td></tr>`).join('')}</table>`
+              : `<p style="font-size:15px;"><b>Rs. ${Number(c.payment.amount).toLocaleString('en-IN')}</b>
+              by <b>${(c.payment.due_at || '').slice(0, 10)}</b> — quote reference <b>${c.payment.reference}</b>.</p>`}
             ${c.payment.link_url
               ? `<a class="btn btn-primary btn-full" style="margin-top:10px;" href="${c.payment.link_url}" target="_blank" rel="noopener noreferrer">Pay now</a>`
               : `<div style="font-size:14px;line-height:1.7;margin-top:8px;">
@@ -471,6 +478,7 @@ function renderActionPanel(ng, c) {
             ${(ng.ai_reasoning_log || []).map(step => `<div style="font-size:13px;padding:3px 0;">• ${step}</div>`).join('') || '<div style="font-size:13px;color:var(--muted);">No detailed mediator log yet.</div>'}
           </div>
         ` : ''}
+        ${planChooser()}
         <div style="display:flex;gap:12px;margin-top:16px;">
           <button class="btn btn-green" style="flex:1;"
             onclick="submitDecision('ACCEPT')">
@@ -507,6 +515,7 @@ function renderActionPanel(ng, c) {
             Rs. ${Number(c.claim_amount||0).toLocaleString('en-IN')}.
             This immediately resolves the dispute.
           </p>
+          ${planChooser()}
           <button class="btn btn-green" onclick="acceptInFull()">
             Accept Full Amount →
           </button>
@@ -580,6 +589,7 @@ function renderActionPanel(ng, c) {
           Rs. ${Number(c.claim_amount||0).toLocaleString('en-IN')}.
           This immediately resolves the dispute.
         </p>
+        ${planChooser()}
         <button class="btn btn-green" onclick="acceptInFull()">
           Accept Full Amount →
         </button>
@@ -693,11 +703,29 @@ async function submitOffer() {
   }
 }
 
+// Instalment choice (only when the claimant's policy allows plans).
+function planChooser() {
+  const opts = caseData?.payment_options || {};
+  const max = opts.max_installments || 1;
+  if (max < 2) return '';
+  const choices = Array.from({ length: max }, (_, i) => i + 1)
+    .map(n => `<option value="${n}">${n === 1 ? 'Pay in one go' : `${n} monthly instalments`}</option>`).join('');
+  return `<div class="form-group" style="margin:10px 0;">
+      <label>How would you like to pay?</label>
+      <select class="plan-choice" onchange="document.querySelectorAll('.plan-choice').forEach(s => s.value = this.value)">${choices}</select>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">Minimum Rs. ${Number(opts.min_installment_amount || 0).toLocaleString('en-IN')} per instalment. Missing one by more than 7 days makes the full balance due.</div>
+    </div>`;
+}
+function chosenInstallments() {
+  const el = document.querySelector('.plan-choice');
+  return el ? Number(el.value) : 1;
+}
+
 async function acceptInFull() {
   if (!confirm('Are you sure you want to accept the full claimed amount?')) return;
   try {
     await axios.post(`${API}/api/respondent/accept-in-full`, {
-      case_id: caseId, email: respondentEmail, token: respondentToken
+      case_id: caseId, email: respondentEmail, token: respondentToken, installments: chosenInstallments()
     });
     showSuccess('Accepted', 'You have accepted the full amount. A settlement agreement will be generated and emailed to both parties.');
   } catch(e) {
@@ -709,6 +737,7 @@ async function submitDecision(decision) {
   try {
     const response = await axios.post(`${API}/api/respondent/proposal-response`, {
       case_id: caseId, email: respondentEmail, token: respondentToken, decision,
+      installments: decision === 'ACCEPT' ? chosenInstallments() : undefined,
       reason: decision === 'REJECT' ? prompt('Optional: why are you rejecting? Mention missing proof if relevant.') || '' : ''
     });
     if (response.data?.outcome === 'SETTLED' || response.data?.status === 'SETTLED') {

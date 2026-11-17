@@ -27,12 +27,14 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 class RespondentVerify(BaseModel):
+    installments:   int | None = None
     case_id:        str
     email:          str = ""  # optional: the token identifies the respondent
     token:          str = ""  # signed token from the emailed portal link (required)
 
 
 class RespondentDecision(BaseModel):
+    installments:   int | None = None
     case_id:        str
     email:          str = ""  # optional: the token identifies the respondent
     token:          str = ""  # signed token from the emailed portal link (required)
@@ -125,7 +127,9 @@ async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
         )
     )
 
+    from app.services.payments import installment_policy
     return {
+        "payment_options": installment_policy(case),
         "case":   respondent_view,
         "status": case["status"],
         "track":  case.get("track"),
@@ -190,6 +194,13 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
 
     settled_amount = case.get("claim_amount", 0) or 0
     now = datetime.now(timezone.utc).isoformat()
+    if (body.installments or 1) > 1:
+        from app.services import payments as _payments
+        try:
+            n = _payments.validate_installments(case, settled_amount, body.installments)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        cosmos_service.update_case(body.case_id, {"payment_plan_request": {"installments": n, "requested_at": now}})
 
     # Reuse the case's negotiation if offers were already exchanged —
     # creating a second one left it invisible to the rest of the system.
@@ -377,6 +388,7 @@ async def respondent_proposal_response(body: RespondentDecision, background_task
         party="respondent",
         reason=body.reason,
         respondent_token=body.token,
+        installments=body.installments,
     )
     return await proposal_response(request, background_tasks, http_request, current_user=None)
 

@@ -48,7 +48,7 @@ def test_razorpay_link_and_signed_webhook(client, login, monkeypatch):
     monkeypatch.setattr(settings, "RAZORPAY_WEBHOOK_SECRET", "whsecret")
     created = {}
 
-    def fake_link(case, amount):
+    def fake_link(case, amount, *rest):
         created.update(case_id=case["id"], amount=amount)
         return {"link_id": "plink_123", "link_url": "https://rzp.io/i/abc"}
     monkeypatch.setattr(payments, "_razorpay_link", fake_link)
@@ -84,7 +84,7 @@ def test_razorpay_failure_falls_back_to_manual(client, login, monkeypatch):
     monkeypatch.setattr(settings, "RAZORPAY_KEY_ID", "rzp_test_x")
     monkeypatch.setattr(settings, "RAZORPAY_KEY_SECRET", "secret")
 
-    def boom(case, amount):
+    def boom(case, amount, *rest):
         raise RuntimeError("gateway down")
     monkeypatch.setattr(payments, "_razorpay_link", boom)
     org, owner, n = _org(client, login)
