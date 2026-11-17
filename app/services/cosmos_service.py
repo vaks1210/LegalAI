@@ -230,6 +230,51 @@ class CosmosService:
         from app.services.blob_service import refresh_case_urls
         return refresh_case_urls(view)
 
+    def delete_case(self, case_id: str) -> None:
+        """
+        Hard-delete a case together with its negotiation(s) and every record
+        in the documents container that points at it (document records and
+        email logs). Stored files are the caller's job (see blob_service).
+        """
+        for neg in self._find_by_case(self.negotiations, case_id):
+            self.negotiations.delete_item(item=neg["id"], partition_key=neg["id"])
+        for doc in self._find_by_case(self.documents, case_id):
+            self.documents.delete_item(item=doc["id"], partition_key=doc["id"])
+        try:
+            self.cases.delete_item(item=case_id, partition_key=case_id)
+        except NOT_FOUND:
+            pass
+        logger.info(f"Case deleted | id={case_id}")
+
+    def get_case_documents_all(self, case_id: str) -> list:
+        """Every documents-container record for a case (incl. email logs)."""
+        return self._find_by_case(self.documents, case_id)
+
+    def _find_by_case(self, container, case_id: str) -> list:
+        if self.local:
+            return container.find(lambda d: d.get("case_id") == case_id)
+        return list(container.query_items(
+            query="SELECT * FROM c WHERE c.case_id = @cid",
+            parameters=[{"name": "@cid", "value": case_id}],
+            enable_cross_partition_query=True,
+        ))
+
+    ERASED_NAME = "[erased]"
+
+    def minimise_claimant_on_case(self, case_id: str) -> dict:
+        """
+        Account erasure for a case that is retained (it reached the
+        respondent): drop the claimant's phone and redact their name. The
+        email stays — it links the record to the party and the respondent
+        already holds it. City/state stay: they decide the forum.
+        """
+        def apply(case):
+            case.pop("claimant_phone", None)
+            case["claimant_name"] = self.ERASED_NAME
+            case["claimant_erased_at"] = self._now()
+            case["updated_at"] = self._now()
+        return self._mutate_case(case_id, apply)
+
     def set_respondent_verified(self, case_id: str) -> dict:
         return self.update_case(case_id, {"respondent_verified": True})
 
@@ -325,6 +370,30 @@ class CosmosService:
                 # Created concurrently by another request — count this one too.
                 self._mutate(self.users, doc_id, apply)
         return allowed["ok"]
+
+    def delete_user_data(self, email: str) -> int:
+        """
+        Erase a user's profile and their OTP / OTP-throttle documents from
+        the users container. Returns the number of documents removed.
+        """
+        key = email.replace('@', '_').replace('.', '_')
+        ids = {f"otp_{key}", f"otpreq_{key}"}
+        while True:  # normally one profile; loop in case of a past duplicate
+            profile = self.get_user_by_email(email)
+            if not profile or profile["id"] in ids:
+                break
+            ids.add(profile["id"])
+            self.users.delete_item(item=profile["id"], partition_key=profile["id"])
+        removed = len(ids) - 2
+        for doc_id in (f"otp_{key}", f"otpreq_{key}"):
+            try:
+                self.users.read_item(item=doc_id, partition_key=doc_id)
+            except NOT_FOUND:
+                continue
+            self.users.delete_item(item=doc_id, partition_key=doc_id)
+            removed += 1
+        logger.info(f"User data erased | docs={removed}")
+        return removed
 
     def get_otp(self, email: str) -> Optional[dict]:
         otp_id = f"otp_{email.replace('@','_').replace('.','_')}"

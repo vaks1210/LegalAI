@@ -363,6 +363,32 @@
 
   /* ── Hidden ───────────────────────────────────── */
   .hidden { display: none !important; }
+
+  /* ── Account menu + delete dialog ─────────────── */
+  .account-wrap { position: relative; }
+  .account-menu {
+    position: absolute; right: 0; top: calc(100% + 8px); z-index: 200;
+    min-width: 230px; background: var(--white); border-radius: 16px;
+    box-shadow: var(--shadow-strong); border: 1px solid var(--line); padding: 6px;
+  }
+  .account-menu .menu-email {
+    padding: 10px 12px 8px; font-size: 12px; color: var(--muted);
+    border-bottom: 1px solid var(--line); margin-bottom: 4px; word-break: break-all;
+  }
+  .account-menu button {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    padding: 10px 12px; border-radius: 10px; font-size: 14px; color: var(--dark); cursor: pointer;
+  }
+  .account-menu button:hover, .account-menu button:focus-visible { background: var(--lgrey); outline: none; }
+  .account-menu button.danger { color: var(--red); }
+  dialog.confirm-dialog {
+    margin: auto; border: none; border-radius: 22px; padding: 24px; width: min(480px, calc(100vw - 32px));
+    box-shadow: var(--shadow-strong); color: var(--dark);
+  }
+  dialog.confirm-dialog::backdrop { background: rgba(11,31,58,0.45); }
+  dialog.confirm-dialog h2 { font-size: 20px; margin-bottom: 10px; }
+  dialog.confirm-dialog p { font-size: 14px; line-height: 1.6; margin-bottom: 12px; }
+  .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
   .hero-panel {
     background: radial-gradient(circle at top left, rgba(126,230,239,0.28), transparent 28%), linear-gradient(135deg, rgba(11,31,58,0.96), rgba(24,89,184,0.88));
     color: white;
@@ -425,9 +451,36 @@
   <div class="nav-brand">LegalAI <span>Resolver</span></div>
   <div class="nav-right">
     <span class="nav-user" id="navUser"></span>
-    <button class="btn-nav hidden" id="btnLogout" onclick="logout()">Logout</button>
+    <div class="account-wrap hidden" id="accountWrap">
+      <button class="btn-nav" id="btnAccount" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="accountMenu" onclick="toggleAccountMenu()">Account ▾</button>
+      <div class="account-menu hidden" id="accountMenu" role="menu">
+        <div class="menu-email" id="accountMenuEmail"></div>
+        <button role="menuitem" onclick="exportMyData()">Download my data</button>
+        <button role="menuitem" class="danger" onclick="openDeleteAccount()">Delete my account…</button>
+        <button role="menuitem" id="btnLogout" onclick="logout()">Logout</button>
+      </div>
+    </div>
   </div>
 </nav>
+
+<!-- DELETE ACCOUNT CONFIRMATION -->
+<dialog class="confirm-dialog" id="deleteAccountDialog" aria-labelledby="deleteAccountTitle">
+  <h2 id="deleteAccountTitle">Delete your account?</h2>
+  <p>This cannot be undone. Consider downloading your data first.</p>
+  <p id="deleteRetentionNotice" style="color:var(--muted);"></p>
+  <div class="form-group">
+    <label for="deleteConfirmEmail">Type your email to confirm</label>
+    <input type="email" id="deleteConfirmEmail" autocomplete="off" oninput="onDeleteConfirmInput()">
+  </div>
+  <div id="deleteAccountMsg" class="hidden"></div>
+  <div class="dialog-actions">
+    <button class="btn btn-outline" onclick="closeDeleteAccount()">Cancel</button>
+    <button class="btn btn-red" id="btnConfirmDelete" disabled onclick="confirmDeleteAccount()">
+      Permanently delete
+    </button>
+  </div>
+</dialog>
 
 <!-- ════════════════════════════════════════════════
      SCREEN 1 — LOGIN
@@ -490,7 +543,10 @@
         <label>
           <input type="checkbox" id="loginConsent">
           <span>I consent to the processing of my personal data for dispute
-          resolution under India's Digital Personal Data Protection Act 2023.</span>
+          resolution under India's Digital Personal Data Protection Act 2023.
+          I can download or delete my data at any time from the Account menu;
+          cases already sent to the other party are kept, with my phone number
+          removed and my name redacted.</span>
         </label>
       </div>
       <button class="btn btn-primary btn-full" onclick="verifyOtp()">
@@ -729,7 +785,9 @@
           <span><b>Data Processing Consent:</b> I consent to LegalAI Resolver
           processing my personal data and the data of the other party for the
           purposes of dispute resolution under India's Digital Personal Data
-          Protection Act 2023.</span>
+          Protection Act 2023. If I later delete my account, this case is kept
+          once it has been sent to the other party, with my phone number removed
+          and my name redacted.</span>
         </label>
       </div>
       <div class="consent-box">
@@ -968,7 +1026,8 @@ function backToEmail() {
 
 function onLoggedIn() {
   document.getElementById('navUser').textContent  = user?.display_name || user?.email || '';
-  document.getElementById('btnLogout').classList.remove('hidden');
+  document.getElementById('accountWrap').classList.remove('hidden');
+  document.getElementById('accountMenuEmail').textContent = user?.email || '';
   // Pre-fill claimant fields
   if (user) {
     document.getElementById('claimantName').value  = user.display_name || '';
@@ -985,11 +1044,95 @@ function logout() {
   localStorage.removeItem('legalai_token');
   localStorage.removeItem('legalai_user');
   token = ''; user = null;
-  document.getElementById('btnLogout').classList.add('hidden');
+  closeAccountMenu();
+  document.getElementById('accountWrap').classList.add('hidden');
   document.getElementById('navUser').textContent = '';
   showScreen('screenLogin');
   document.getElementById('loginStep1').classList.remove('hidden');
   document.getElementById('loginStep2').classList.add('hidden');
+}
+
+// ── Account menu: DPDP data-principal rights ──
+function toggleAccountMenu() {
+  const menu = document.getElementById('accountMenu');
+  const open = menu.classList.toggle('hidden') === false;
+  document.getElementById('btnAccount').setAttribute('aria-expanded', String(open));
+}
+
+function closeAccountMenu() {
+  document.getElementById('accountMenu').classList.add('hidden');
+  document.getElementById('btnAccount').setAttribute('aria-expanded', 'false');
+}
+
+document.addEventListener('click', (e) => {
+  if (!document.getElementById('accountWrap').contains(e.target)) closeAccountMenu();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAccountMenu(); });
+
+async function exportMyData() {
+  closeAccountMenu();
+  try {
+    const r = await axios.get(`${API}/api/auth/me/export`, authHeaders());
+    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'legalai-my-data.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Could not export your data. Please try again.');
+  }
+}
+
+async function openDeleteAccount() {
+  closeAccountMenu();
+  const input = document.getElementById('deleteConfirmEmail');
+  input.value = '';
+  input.placeholder = user?.email || '';
+  document.getElementById('btnConfirmDelete').disabled = true;
+  document.getElementById('deleteAccountMsg').classList.add('hidden');
+  const notice = document.getElementById('deleteRetentionNotice');
+  notice.textContent = '';
+  document.getElementById('deleteAccountDialog').showModal();
+  input.focus();
+  try {
+    const r = await axios.get(`${API}/api/auth/disclaimers`);
+    notice.textContent = r.data.data_retention || '';
+  } catch (e) { /* the notice is informational; deletion still works */ }
+}
+
+function closeDeleteAccount() {
+  document.getElementById('deleteAccountDialog').close();
+}
+
+function onDeleteConfirmInput() {
+  const typed = document.getElementById('deleteConfirmEmail').value.trim().toLowerCase();
+  document.getElementById('btnConfirmDelete').disabled = typed !== (user?.email || '').toLowerCase();
+}
+
+async function confirmDeleteAccount() {
+  const btn = document.getElementById('btnConfirmDelete');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const r = await axios.delete(`${API}/api/auth/me`, {
+      ...authHeaders(),
+      data: { confirm_email: document.getElementById('deleteConfirmEmail').value.trim() },
+    });
+    closeDeleteAccount();
+    logout();
+    const kept = r.data.retained_cases;
+    alert('Your account has been deleted.' + (kept
+      ? ` ${kept} case(s) already sent to the other party were kept with your phone number removed and your name redacted.`
+      : ''));
+  } catch (e) {
+    showAlert('deleteAccountMsg', e.response?.data?.detail || 'Could not delete your account. Please try again.', 'error');
+    btn.disabled = false;
+  } finally {
+    btn.textContent = 'Permanently delete';
+  }
 }
 
 function authHeaders() {

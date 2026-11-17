@@ -115,24 +115,33 @@ class BlobService:
         previously issued URL, return a freshly signed one for the same file.
         Unknown URL shapes are returned unchanged.
         """
-        if not url:
+        ref = self.parse_url(url)
+        if not ref:
             return url
+        try:
+            return self.generate_download_url(*ref, expiry_hours)
+        except Exception:
+            return url
+
+    def parse_url(self, url: str | None) -> tuple[str, str] | None:
+        """(container_key, blob_name) for a URL this service issued, else None."""
+        if not url:
+            return None
         try:
             path = unquote(urlparse(url).path)
             if self.local:
                 prefix = "/api/files/"
                 if not path.startswith(prefix):
-                    return url
+                    return None
                 container_key, blob_name = path[len(prefix):].split("/", 1)
             else:
                 container, blob_name = path.lstrip("/").split("/", 1)
-                reverse = {v: k for k, v in CONTAINERS.items()}
-                container_key = reverse.get(container)
-                if not container_key:
-                    return url
-            return self.generate_download_url(container_key, blob_name, expiry_hours)
+                container_key = {v: k for k, v in CONTAINERS.items()}.get(container)
+            if container_key not in CONTAINERS or not blob_name:
+                return None
+            return container_key, blob_name
         except Exception:
-            return url
+            return None
 
     def upload(
         self,

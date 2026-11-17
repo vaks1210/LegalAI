@@ -8,7 +8,22 @@ DPDP_CONSENT_TEXT = (
     "I consent to the processing of my personal data and the personal data "
     "of the other party for the purposes of dispute resolution, under India's "
     "Digital Personal Data Protection Act 2023. I understand that my data will "
-    "be stored securely and used only for resolving this dispute."
+    "be stored securely and used only for resolving this dispute. I can download "
+    "or delete my data at any time from my account; cases that have already been "
+    "sent to the other party are kept, with my phone number removed and my name "
+    "redacted, because they also form the other party's record."
+)
+
+DATA_RETENTION_NOTICE = (
+    "Deleting your account removes your profile and login records, and every case "
+    "that was never sent to the other party, including its uploaded evidence and "
+    "generated documents. Cases that were sent to the other party are kept, because "
+    "they are also that party's record and may be needed in legal proceedings: your "
+    "phone number is removed and your name is replaced with [erased]; your email "
+    "address and city/state remain on those cases. Cases where you are the respondent "
+    "belong to the claimant and are not changed. Cases filed by an organisation belong "
+    "to that organisation and are not changed; you are removed from its members, and "
+    "you must add another owner first if you are its only owner."
 )
 
 AI_DISCLAIMER_TEXT = (
