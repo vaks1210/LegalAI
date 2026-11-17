@@ -18,6 +18,7 @@ from app.models.negotiation import ProofResponseRequest, ProposalDecision, Propo
 from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.core.jurisdictions import money
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -146,8 +147,11 @@ async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
     from app.services.messaging import mask_phone, normalize_phone
     from app.core.i18n import LANGUAGES, case_language
     from app.services.openai_service import openai_service
-    phone = normalize_phone(case.get("respondent_phone"))
+    from app.core.jurisdictions import case_jurisdiction
+    jur = case_jurisdiction(case)
+    phone = normalize_phone(case.get("respondent_phone"), default_cc=jur.phone_cc)
     return {
+        "jurisdiction": jur.public(),
         "language":  case_language(case),
         "languages": LANGUAGES,
         "machine_translation": openai_service.is_configured,
@@ -380,7 +384,7 @@ async def accept_in_full(body: RespondentVerify, background_tasks: BackgroundTas
     background_tasks.add_task(in_thread(_handle_settlement), body.case_id)
 
     return {
-        "message":        f"You have accepted Rs. {settled_amount:,.0f}. Settlement agreement is being generated.",
+        "message":        f"You have accepted {money(settled_amount, case)}. Settlement agreement is being generated.",
         "settled_amount": settled_amount,
         "outcome":        "SETTLED",
     }

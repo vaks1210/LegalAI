@@ -376,7 +376,9 @@ def intake(case: dict, track: str) -> dict:
         evidence,
     ) or ["Keep originals and back-ups of everything you described"]
 
-    limitation_years = get_limitation_period(category)
+    from app.core.jurisdictions import case_jurisdiction
+    _j = case_jurisdiction(case)
+    limitation_years = get_limitation_period(category) if _j.code == "IN" else _j.limitation_years
     elapsed = _years_since(case.get("incident_date"))
     time_barred = elapsed is not None and elapsed > limitation_years
 
@@ -387,7 +389,8 @@ def intake(case: dict, track: str) -> dict:
     if _search(r"\b(notice|informed|repeated(ly)?|followed up|reminder)\b", text):
         strengths.append("You raised the issue with the other side before escalating")
     if amount:
-        strengths.append(f"The claim is for a specific, quantified amount (Rs. {amount:,.0f})")
+        from app.core.jurisdictions import money
+        strengths.append(f"The claim is for a specific, quantified amount ({money(amount, case)})")
 
     weaknesses = []
     if len(evidence) < 2:
@@ -397,8 +400,10 @@ def intake(case: dict, track: str) -> dict:
     if not case.get("incident_date"):
         weaknesses.append("Incident date not provided — needed to confirm limitation")
 
-    severity = "HIGH" if track == "criminal" or (amount or 0) >= 500_000 else (
-        "MEDIUM" if (amount or 0) >= 25_000 else "LOW")
+    # Bands are set in rupees; other currencies are scaled by a rough rate.
+    in_inr = (amount or 0) * _j.extra.get("inr_rate", 1)
+    severity = "HIGH" if track == "criminal" or in_inr >= 500_000 else (
+        "MEDIUM" if in_inr >= 25_000 else "LOW")
 
     return {
         "dispute_type":            label,
@@ -414,7 +419,8 @@ def intake(case: dict, track: str) -> dict:
         "evidence_strength_score": score,
         "missing_proof_checklist": missing,
         "is_time_barred":          time_barred,
-        "limitation_notes":        f"Typical limitation period for this dispute: {limitation_years} year(s).",
+        "limitation_notes":        (f"Typical limitation period for this dispute: {limitation_years} year(s)."
+                                    + ("" if _j.code == "IN" else f" ({_j.limitation})")),
         "respondent_is_company":   case.get("respondent_type") == "company",
         "key_issues":              [label, "Whether the respondent's refusal / non-payment is justified"],
         "claimant_strengths":      strengths,
@@ -439,19 +445,29 @@ def _criminal_sections(case: dict) -> list:
 
 
 def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
+    from app.core.jurisdictions import case_jurisdiction
     intake_data = intake_data or {}
     category = "criminal" if track == "criminal" else intake_data.get("dispute_category", "other")
-    state = case.get("claimant_state") or "India"
+    j = case_jurisdiction(case)
+    india = j.code == "IN"
+    state = case.get("claimant_state") or j.name
 
-    laws = [
-        {"act": act.format(rent_act=get_rent_control_act(state)), "section": sec,
-         "relevance": rel, "strength": strength}
-        for act, sec, rel, strength in LAWS_BY_CATEGORY.get(category, LAWS_BY_CATEGORY["contract_breach"])
-    ]
-
-    forum, forum_name = FORUM_BY_TRACK.get(track, FORUM_BY_TRACK["monetary_civil"])
-    if track == "consumer":
-        forum_name = CONSUMER_FORUM_TIERS[get_consumer_forum_tier(case.get("claim_amount"))]["description"]
+    if india:
+        laws = [
+            {"act": act.format(rent_act=get_rent_control_act(state)), "section": sec,
+             "relevance": rel, "strength": strength}
+            for act, sec, rel, strength in LAWS_BY_CATEGORY.get(category, LAWS_BY_CATEGORY["contract_breach"])
+        ]
+        forum, forum_name = FORUM_BY_TRACK.get(track, FORUM_BY_TRACK["monetary_civil"])
+        if track == "consumer":
+            forum_name = CONSUMER_FORUM_TIERS[get_consumer_forum_tier(case.get("claim_amount"))]["description"]
+    else:
+        laws = [] if track == "criminal" else [
+            {"act": act, "section": sec, "relevance": rel, "strength": strength}
+            for act, sec, rel, strength in j.laws_for(category)
+        ]
+        forum = FORUM_BY_TRACK.get(track, FORUM_BY_TRACK["monetary_civil"])[0]
+        forum_name = j.forum_for(track, case.get("claim_amount"))
     if case.get("claimant_city") and forum_name:
         forum_name = f"{forum_name}, {case['claimant_city']}"
 
@@ -465,9 +481,10 @@ def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
     else:
         standing = "WEAK"
 
-    limitation = get_limitation_period(category if category != "criminal" else "other")
+    limitation = (get_limitation_period(category if category != "criminal" else "other")
+                  if india else j.limitation_years)
 
-    if track == "criminal":
+    if track == "criminal" and india:
         immediate = ["Report to the police (dial 112 in an emergency) and request an FIR",
                      "Seek medical examination and keep records if injured",
                      "Preserve messages, call logs and any CCTV footage"]
@@ -475,13 +492,26 @@ def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
         steps = ["Visit the jurisdictional police station or file a Zero FIR",
                  "If the FIR is refused, approach the Superintendent of Police in writing",
                  "If still refused, apply to the Magistrate under BNSS Section 175(3)"]
-    else:
+    elif track == "criminal":
+        immediate = [j.police, "Seek medical attention and keep records if injured",
+                     "Preserve messages, call logs and any CCTV footage"]
+        relief = ["Police investigation and prosecution", "Protective orders where available"]
+        steps = [j.police, "Ask for a crime / incident reference number", "Consult a criminal lawyer in "
+                 f"{j.name} about protective orders"]
+    elif india:
         immediate = ["Send a written legal notice giving 15 days to comply",
                      "Collect and back up all documents listed in the missing-proof checklist",
                      "Keep all further communication in writing"]
         relief = ["Recovery of the amount claimed", "Interest on delayed payment", "Costs of proceedings"]
         steps = ["Send a legal notice", "Attempt mediation (this platform / Lok Adalat)",
                  f"File before the {forum_name or 'appropriate forum'} if unresolved"]
+    else:
+        immediate = [f"Send a written demand giving {j.notice_days} days to respond. {j.notice_note}",
+                     "Collect and back up all documents listed in the missing-proof checklist",
+                     "Keep all further communication in writing"]
+        relief = ["Recovery of the amount claimed", "Interest where the contract or law allows", "Costs where recoverable"]
+        steps = ["Send a written demand / letter of claim", "Attempt mediation on this platform",
+                 f"File before the {forum_name or 'competent court'} if unresolved"]
 
     return {
         "track":                   track,
@@ -506,13 +536,14 @@ def legal(case: dict, track: str, intake_data: dict | None = None) -> dict:
         "key_legal_issues":        intake_data.get("key_issues", []),
         "precedent_cases":         [],
         "legal_notice_required":   track != "criminal",
-        "legal_notice_notice_period_days": 15,
+        "legal_notice_notice_period_days": 15 if india else j.notice_days,
         "relief_available":        relief,
         "filing_steps":            steps,
         "recommended_immediate_actions": immediate,
         "total_statutory_dues":    0,
         "statutory_entitlements":  {},
-        "ipc_sections":            _criminal_sections(case) if track == "criminal" else [],
+        "ipc_sections":            _criminal_sections(case) if track == "criminal" and india else [],
+        "jurisdiction":            j.code,
         "analysis_mode":           "rule_based",
     }
 

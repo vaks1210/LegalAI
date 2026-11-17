@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app.config import settings
+from app.core.jurisdictions import money
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,15 @@ RAZORPAY_API = "https://api.razorpay.com/v1"
 PAYMENT_WINDOW_DAYS = 14   # matches the settlement agreement's payment clause
 
 
-def provider() -> str:
-    return "razorpay" if settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET else "manual"
+def provider(case: dict | None = None) -> str:
+    """Razorpay collects INR only; other currencies use the organisation's payee details."""
+    if not (settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET):
+        return "manual"
+    if case is not None:
+        from app.core.jurisdictions import case_jurisdiction
+        if (case.get("currency") or "INR") != "INR" or "razorpay" not in case_jurisdiction(case).payment_providers:
+            return "manual"
+    return "razorpay"
 
 
 def _payee(case: dict) -> dict:
@@ -88,7 +96,7 @@ def validate_installments(case: dict, amount: float, n: int | None) -> int:
     if n < 1 or n > pol["max_installments"]:
         raise ValueError(f"Choose between 1 and {pol['max_installments']} instalments.")
     if amount and amount / n < pol["min_installment_amount"]:
-        raise ValueError(f"Each instalment must be at least Rs. {pol['min_installment_amount']:,.0f}.")
+        raise ValueError(f"Each instalment must be at least {money(pol['min_installment_amount'], case)}.")
     return n
 
 
@@ -130,7 +138,7 @@ def create_payment_request(case: dict) -> dict | None:
         return case.get("payment")
     n = int((case.get("payment_plan_request") or {}).get("installments") or 1)
     start = datetime.now(timezone.utc) + timedelta(days=PAYMENT_WINDOW_DAYS)
-    payment = {"provider": provider(), "amount": amount, "currency": case.get("currency") or "INR",
+    payment = {"provider": provider(case), "amount": amount, "currency": case.get("currency") or "INR",
                "reference": case.get("external_reference") or case["id"][:8].upper(),
                "installments": n, "plan": build_schedule(amount, n, start),
                "created_at": datetime.now(timezone.utc).isoformat()}
@@ -228,9 +236,9 @@ def check_payment_schedules(now: datetime | None = None) -> dict:
             label = f"Instalment {nxt['no']} of {len(payment['plan'])}" if len(payment["plan"]) > 1 else "Payment"
             email_service.send_case_update(
                 to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case["id"],
-                headline=f"Reminder: {label} of Rs. {nxt['amount']:,.0f} due {due.strftime('%d %b %Y')}",
+                headline=f"Reminder: {label} of {money(nxt['amount'], case)} due {due.strftime('%d %b %Y')}",
                 summary=f"Under your settlement with {case['claimant_name']}, {label.lower()} of "
-                        f"Rs. {nxt['amount']:,.0f} is due on {due.strftime('%d %B %Y')}. {how} "
+                        f"{money(nxt['amount'], case)} is due on {due.strftime('%d %B %Y')}. {how} "
                         f"Missing a payment by more than {GRACE_DAYS} days makes the full balance due.",
                 portal_url=nxt.get("link_url") or None, action_label="Pay now" if nxt.get("link_url") else None,
             )
@@ -271,9 +279,9 @@ def _default_plan(case: dict, missed: dict, now: datetime) -> None:
         logger.exception(f"Breach notice failed on default | case_id={case['id']}")
     email_service.send_case_update(
         to_email=case["claimant_email"], party_name=case["claimant_name"], case_id=case["id"],
-        headline=f"Payment default: Rs. {balance:,.0f} now due",
+        headline=f"Payment default: {money(balance, case)} now due",
         summary=f"{case['respondent_name']} missed instalment {missed['no']} by more than {GRACE_DAYS} days. "
-                f"Under the settlement agreement the full unpaid balance of Rs. {balance:,.0f} is now due. "
+                f"Under the settlement agreement the full unpaid balance of {money(balance, case)} is now due. "
                 "A Breach of Settlement Notice has been prepared.",
         portal_url=breach_url, action_label="Download Breach Notice" if breach_url else None,
     )

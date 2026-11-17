@@ -600,9 +600,17 @@
           placeholder="Describe your dispute in plain English. Include: what happened, when it happened, how much money is involved, what evidence you have, and what outcome you want..."></textarea>
         <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="charCount">0 / 5000</div>
       </div>
+      <div class="form-group">
+        <label>Which country's law governs this dispute?</label>
+        <select id="jurisdiction" onchange="document.getElementById('claimCurrency').textContent = '(' + currencyLabel(JUR_CURRENCY[this.value]) + ')'">
+          <option value="IN">India</option><option value="GB">England &amp; Wales</option>
+          <option value="SG">Singapore</option><option value="AE">United Arab Emirates</option>
+          <option value="US">United States</option>
+        </select>
+      </div>
       <div class="form-row">
         <div class="form-group">
-          <label>Approximate claim amount (Rs.)</label>
+          <label>Approximate claim amount <span id="claimCurrency">(Rs.)</span></label>
           <input type="number" id="claimAmount" placeholder="45000 (leave blank if non-monetary)">
         </div>
         <div class="form-group">
@@ -837,6 +845,16 @@ const API  = '';   // same origin
 let token  = localStorage.getItem('legalai_token') || '';
 let user   = JSON.parse(localStorage.getItem('legalai_user') || 'null');
 let currentCaseId = null;
+let currentCurrency = 'INR';
+const JUR_CURRENCY = { IN: 'INR', GB: 'GBP', SG: 'SGD', AE: 'AED', US: 'USD' };
+function currencyLabel(code) { code = code || currentCurrency; return code === 'INR' ? 'Rs.' : code; }
+function fmtMoney(v, code) {
+  code = code || currentCurrency;
+  const n = Number(v || 0);
+  if (code === 'INR') return 'Rs. ' + n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  try { return new Intl.NumberFormat('en', { style: 'currency', currency: code, maximumFractionDigits: 2 }).format(n); }
+  catch (_) { return code + ' ' + n.toLocaleString(); }
+}
 let pollInterval  = null;
 let uploadedEvidenceFiles = [];
 
@@ -1025,7 +1043,7 @@ async function loadMyCases() {
               <td style="font-family:monospace;font-weight:600;">${c.id.slice(0,8).toUpperCase()}</td>
               <td>${c.respondent_name}</td>
               <td>${(c.track||'').replace('_',' ')}</td>
-              <td>${c.claim_amount ? 'Rs. ' + Number(c.claim_amount).toLocaleString('en-IN') : 'Non-monetary'}</td>
+              <td>${c.claim_amount ? fmtMoney(c.claim_amount, c.currency) : 'Non-monetary'}</td>
               <td><span class="badge badge-${statusClass(c.status)}" title="${c.status}">${statusLabel(c.status)}</span></td>
               <td>${c.created_at ? c.created_at.slice(0,10) : ''}</td>
               <td>
@@ -1132,7 +1150,7 @@ function buildReview() {
     <div style="margin-bottom:12px;">
       <div class="section-title">Claim Amount</div>
       <div style="font-size:20px;font-weight:700;color:var(--navy);">
-        ${amt ? 'Rs. ' + Number(amt).toLocaleString('en-IN') : 'Non-monetary dispute'}
+        ${amt ? fmtMoney(amt, JUR_CURRENCY[document.getElementById('jurisdiction').value]) : 'Non-monetary dispute'}
       </div>
     </div>
     <div>
@@ -1178,6 +1196,7 @@ async function submitCase() {
       respondent_company_name: document.getElementById('companyName').value.trim() || null,
       respondent_company_reg:  document.getElementById('companyReg').value.trim() || null,
       claim_amount:            document.getElementById('claimAmount').value ? Number(document.getElementById('claimAmount').value) : null,
+      jurisdiction:            document.getElementById('jurisdiction').value || 'IN',
       incident_date:           document.getElementById('incidentDate').value || null,
       currency:                'INR',
       evidence_file_ids:       uploadedEvidenceFiles.filter(file => !String(file.id).startsWith('draft_')).map(file => file.id),
@@ -1299,6 +1318,7 @@ async function loadAnalysis(caseId) {
   try {
     const r    = await axios.get(`${API}/api/cases/${caseId}`, authHeaders());
     const c    = r.data;
+    currentCurrency = c.currency || 'INR';
     const i    = c.intake_data    || {};
     const l    = c.legal_data     || {};
     const a    = c.analytics_data || {};
@@ -1370,13 +1390,13 @@ async function loadAnalysis(caseId) {
         </div>
         <div class="stat-card" style="border-left-color:var(--green);">
           <div class="stat-val">
-            ${a.zopa_optimal ? 'Rs. '+Number(a.zopa_optimal).toLocaleString('en-IN') : '—'}
+            ${a.zopa_optimal ? fmtMoney(a.zopa_optimal) : '—'}
           </div>
           <div class="stat-lbl">Optimal Settlement</div>
         </div>
         <div class="stat-card" style="border-left-color:var(--red);">
           <div class="stat-val">
-            ${a.court_cost_estimate ? 'Rs. '+Number(a.court_cost_estimate).toLocaleString('en-IN') : '—'}
+            ${a.court_cost_estimate ? fmtMoney(a.court_cost_estimate) : '—'}
           </div>
           <div class="stat-lbl">Court Cost Est.</div>
         </div>
@@ -1436,11 +1456,11 @@ async function loadAnalysis(caseId) {
         <div class="offer-grid" style="margin-top:14px;">
           <div class="offer-box">
             <div class="offer-label">Court Cost</div>
-            <div class="offer-amount" style="font-size:22px;">${a.court_cost_estimate ? 'Rs. ' + Number(a.court_cost_estimate).toLocaleString('en-IN') : '—'}</div>
+            <div class="offer-amount" style="font-size:22px;">${a.court_cost_estimate ? fmtMoney(a.court_cost_estimate) : '—'}</div>
           </div>
           <div class="offer-box">
             <div class="offer-label">Platform Cost</div>
-            <div class="offer-amount" style="font-size:22px;">${a.settlement_cost ? 'Rs. ' + Number(a.settlement_cost).toLocaleString('en-IN') : '—'}</div>
+            <div class="offer-amount" style="font-size:22px;">${a.settlement_cost ? fmtMoney(a.settlement_cost) : '—'}</div>
           </div>
         </div>
       </div>
@@ -1606,6 +1626,7 @@ async function loadNegotiation() {
       axios.get(`${API}/api/negotiation/status/${currentCaseId}`, authHeaders()),
     ]);
     const c  = caseR.data;
+    currentCurrency = c.currency || 'INR';
     const ns = negR.data;
     const rd = ns.current_round_detail;
 
@@ -1689,7 +1710,7 @@ async function loadNegotiation() {
             <div class="proposal-box">
               <div class="proposal-label">${c.status === 'SETTLEMENT_PENDING_CONFIRMATION' ? 'Direct Settlement Match' : 'AI Mediator Proposal'}</div>
               <div class="proposal-amount">
-                Rs. ${Number(rd.proposed_amount).toLocaleString('en-IN')}
+                ${fmtMoney(rd.proposed_amount)}
               </div>
             </div>
           `;
@@ -1786,7 +1807,7 @@ async function loadNegotiation() {
         <div class="card">
           <div class="card-title">Submit Your Offer — Round ${roundNum}</div>
           <div class="form-group">
-            <label>Your Offer Amount (Rs.)</label>
+            <label>Your Offer Amount (${currencyLabel()})</label>
             <input type="number" id="claimantOfferAmt" placeholder="e.g. 40000">
           </div>
           <div class="form-group">
@@ -1816,7 +1837,7 @@ async function loadNegotiation() {
         <div class="card">
           <div class="card-title">Settlement Complete</div>
           <div class="alert alert-success">
-            Case settled for Rs. ${Number(c.settled_amount||0).toLocaleString('en-IN')}.
+            Case settled for ${fmtMoney(c.settled_amount||0)}.
           </div>
           ${ns.settlement_email_status ? `
             <div class="offer-grid" style="margin-bottom:12px;">

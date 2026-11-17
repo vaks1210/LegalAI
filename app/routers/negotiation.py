@@ -24,6 +24,7 @@ from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
 from app.services import messaging
+from app.core.jurisdictions import money
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -257,9 +258,9 @@ async def _handle_offer_submission(
             amount = direct[0]
             ask = (round_doc.get("claimant") or {}).get("amount")
             reason = (
-                f"The respondent's offer of Rs. {amount:,.0f} meets or exceeds the claimant's ask"
-                + (f" of Rs. {ask:,.0f}" if ask is not None else "")
-                + f". Both parties are asked to confirm settlement at Rs. {amount:,.0f}."
+                f"The respondent's offer of {money(amount, case)} meets or exceeds the claimant's ask"
+                + (f" of {money(ask, case)}" if ask is not None else "")
+                + f". Both parties are asked to confirm settlement at {money(amount, case)}."
             )
             cosmos_service.update_round_in_negotiation(neg["id"], round_number, {
                 "ai_proposed_amount":          amount,
@@ -280,6 +281,7 @@ async def _handle_offer_submission(
                 email_service.send_proposal(
                     to_email=to_email, party_name=party_name, case_id=case["id"],
                     round_num=round_number, proposed_amount=amount, reasoning=reason, portal_url=portal,
+                    currency=case.get("currency") or "INR",
                 )
             messaging.messaging_service.notify_respondent(
                 case, "proposal", messaging.proposal_text(case, round_number, amount))
@@ -479,6 +481,7 @@ def issue_proposal(case_id: str, round_number: int, amount, actions, reasoning,
         email_service.send_proposal(
             to_email=to_email, party_name=party_name, case_id=case_id, round_num=round_number,
             proposed_amount=amount or 0, reasoning=reasoning or "", portal_url=portal,
+            currency=case.get("currency") or "INR",
         )
     messaging.messaging_service.notify_respondent(
         case, "proposal", messaging.proposal_text(case, round_number, amount))
@@ -777,6 +780,7 @@ async def _handle_settlement(case_id: str):
                 case_id=case_id,
                 settled_amount=settled_amount,
                 download_url=settlement_url or _portal_url(case, "claimant" if to_email == case["claimant_email"] else "respondent"),
+                currency=case.get("currency") or "INR",
             )
 
         _request_payment(case_id)
@@ -809,13 +813,13 @@ def _request_payment(case_id: str) -> None:
             link, label = _portal_url(case, "respondent"), "View settlement"
         email_service.send_case_update(
             to_email=case["respondent_email"], party_name=case["respondent_name"], case_id=case_id,
-            headline=(f"Payment due: Rs. {payment['amount']:,.0f} by {due}" if len(plan) <= 1 else
-                      f"Payment plan: {len(plan)} instalments, first Rs. {plan[0]['amount']:,.0f} due {due}"),
-            summary=(f"Under your settlement agreement, Rs. {payment['amount']:,.0f} is due to "
+            headline=(f"Payment due: {money(payment['amount'], case)} by {due}" if len(plan) <= 1 else
+                      f"Payment plan: {len(plan)} instalments, first {money(plan[0]['amount'], case)} due {due}"),
+            summary=(f"Under your settlement agreement, {money(payment['amount'], case)} is due to "
                      f"{case['claimant_name']} by {due}. {how}" if len(plan) <= 1 else
-                     f"Under your settlement agreement you pay {case['claimant_name']} Rs. {payment['amount']:,.0f} in "
+                     f"Under your settlement agreement you pay {case['claimant_name']} {money(payment['amount'], case)} in "
                      f"{len(plan)} monthly instalments: " +
-                     "; ".join(f"Rs. {i['amount']:,.0f} by {i['due_at'][:10]}" for i in plan) + f". {how} "
+                     "; ".join(f"{money(i['amount'], case)} by {i['due_at'][:10]}" for i in plan) + f". {how} "
                      "We will remind you before each due date. Missing one by more than 7 days makes the "
                      "full balance due."),
             portal_url=link, action_label=label,

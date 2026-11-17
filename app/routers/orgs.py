@@ -95,6 +95,15 @@ class OrgCreate(BaseModel):
     contact_email:  str
     profile:        OrgProfile
     accept_terms:   bool = False
+    jurisdiction:   str = "IN"      # default governing law for the org's cases
+
+
+def _jurisdiction(value: str) -> str:
+    from app.core.jurisdictions import JURISDICTIONS, normalize_jurisdiction
+    code = normalize_jurisdiction(value)
+    if not code:
+        raise HTTPException(status_code=400, detail=f"Unsupported jurisdiction. Use one of: {', '.join(JURISDICTIONS)}")
+    return code
 
 
 def _public_org(org: dict) -> dict:
@@ -130,7 +139,7 @@ async def create_org(body: OrgCreate, current_user: dict = Depends(get_current_u
         "members": [{"email": current_user["email"].lower(), "role": "owner", "added_at": _now()}],
         "api_keys": [],
         "templates": {},
-        "settings": {"auto_invite": False},
+        "settings": {"auto_invite": False, "jurisdiction": _jurisdiction(body.jurisdiction)},
         "terms_accepted_at": _now(),
         "terms_accepted_by": current_user["email"].lower(),
     })
@@ -176,6 +185,7 @@ class OrgUpdate(BaseModel):
     auto_invite:   bool | None = None
     require_mediator_review: bool | None = None
     installments:  InstalmentPolicy | None = None
+    jurisdiction:  str | None = None
     channels:      ChannelPrefs | None = None
     payee:         Payee | None = None
 
@@ -195,6 +205,8 @@ async def update_org(body: OrgUpdate, actor: OrgActor = Depends(org_actor)):
             org.setdefault("settings", {})["auto_invite"] = body.auto_invite
         if body.installments is not None:
             org.setdefault("settings", {})["installments"] = body.installments.model_dump()
+        if body.jurisdiction is not None:
+            org.setdefault("settings", {})["jurisdiction"] = _jurisdiction(body.jurisdiction)
         if body.channels is not None:
             org.setdefault("settings", {})["channels"] = body.channels.model_dump()
         if body.require_mediator_review is not None:
@@ -401,6 +413,7 @@ def _case_row(c: dict) -> dict:
         "settled_amount": c.get("settled_amount"), "current_round": c.get("current_round", 0),
         "created_at": c.get("created_at"), "updated_at": c.get("updated_at"),
         "settled_at": c.get("settled_at"), "source": c.get("source"),
+        "currency": c.get("currency") or "INR", "jurisdiction": c.get("jurisdiction") or "IN",
     }
 
 
@@ -441,8 +454,19 @@ async def org_stats(actor: OrgActor = Depends(org_actor)):
     terminal = {s.value for s in TERMINAL_STATES}
     closed = [c for c in cases if c.get("status") in terminal]
     days = [d for d in (_days_between(c.get("created_at"), c.get("settled_at")) for c in settled) if d is not None]
-    claimed = sum(c.get("claim_amount") or 0 for c in cases)
-    recovered = sum(c.get("settled_amount") or 0 for c in settled)
+    # Money is only summed within one currency: headline figures use the
+    # organisation's default currency; every currency is in by_currency.
+    from app.core.jurisdictions import JURISDICTIONS
+    main = JURISDICTIONS[(actor.org.get("settings") or {}).get("jurisdiction") or "IN"].currency
+    by_currency: dict[str, dict] = {}
+    for c in cases:
+        cur = by_currency.setdefault(c.get("currency") or "INR", {"claimed": 0.0, "settled": 0.0, "cases": 0})
+        cur["cases"] += 1
+        cur["claimed"] += c.get("claim_amount") or 0
+        if c.get("status") == CaseStatus.SETTLED.value:
+            cur["settled"] += c.get("settled_amount") or 0
+    claimed = (by_currency.get(main) or {}).get("claimed", 0.0)
+    recovered = (by_currency.get(main) or {}).get("settled", 0.0)
     paid = [c for c in settled if c.get("settlement_honored") is True]
     plan = b2b.PLANS.get(actor.org.get("plan", b2b.DEFAULT_PLAN), b2b.PLANS[b2b.DEFAULT_PLAN])
     return {
@@ -451,6 +475,9 @@ async def org_stats(actor: OrgActor = Depends(org_actor)):
         "by_status": by_status,
         "amount_claimed": round(claimed, 2),
         "amount_settled": round(recovered, 2),
+        "currency": main,
+        "by_currency": {k: {**v, "claimed": round(v["claimed"], 2), "settled": round(v["settled"], 2)}
+                        for k, v in by_currency.items()},
         "settlement_rate": round(len(settled) / len(closed), 3) if closed else None,
         "recovery_rate_of_claimed": round(recovered / claimed, 3) if claimed else None,
         "payments_confirmed": len(paid),

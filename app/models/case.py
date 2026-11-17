@@ -149,6 +149,7 @@ class DisputeSubmission(BaseModel):
     respondent_email: str
     respondent_phone: Optional[str] = None
     respondent_language: Optional[str] = None   # e.g. "hi"; see app/core/i18n.py
+    jurisdiction: str = "IN"                    # governing law; see app/core/jurisdictions.py
     respondent_type: RespondentType = RespondentType.INDIVIDUAL
     respondent_company_name: Optional[str] = None
     respondent_company_reg: Optional[str] = None
@@ -158,6 +159,15 @@ class DisputeSubmission(BaseModel):
     evidence_file_ids: list[str] = []
     claimant_consent: bool = False
     disclaimer_acknowledged: bool = False
+
+    @field_validator("jurisdiction")
+    @classmethod
+    def _jurisdiction(cls, v):
+        from app.core.jurisdictions import JURISDICTIONS, normalize_jurisdiction
+        code = normalize_jurisdiction(v or "IN")
+        if not code:
+            raise ValueError(f"Unsupported jurisdiction. Use one of: {', '.join(JURISDICTIONS)}")
+        return code
 
     @field_validator("respondent_language")
     @classmethod

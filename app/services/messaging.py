@@ -175,7 +175,8 @@ class MessagingService:
         Returns the delivery record, or None when nothing was attempted.
         """
         try:
-            to = normalize_phone(case.get("respondent_phone"))
+            from app.core.jurisdictions import case_jurisdiction
+            to = normalize_phone(case.get("respondent_phone"), default_cc=case_jurisdiction(case).phone_cc)
             channels = self.channels_for(case) if to else []
             if not channels:
                 return None
@@ -221,9 +222,10 @@ def _ref(case: dict) -> str:
     return case["id"][:8].upper()
 
 
-def _amount(value) -> str:
+def _amount(value, case: dict | None = None) -> str:
+    from app.core.jurisdictions import money
     try:
-        return f"Rs. {float(value):,.0f}" if value else ""
+        return money(float(value), case or {}) if value else ""
     except (TypeError, ValueError):
         return ""
 
@@ -239,7 +241,7 @@ def _msg(case: dict, key: str, **params) -> str:
 
 
 def invite_text(case: dict) -> str:
-    amt = _amount(case.get("claim_amount"))
+    amt = _amount(case.get("claim_amount"), case)
     return _msg(case, "invite_amount" if amt else "invite", amount=amt)
 
 
@@ -249,7 +251,7 @@ def nudge_text(case: dict, due) -> str:
 
 
 def proposal_text(case: dict, round_num: int, amount) -> str:
-    amt = _amount(amount)
+    amt = _amount(amount, case)
     return _msg(case, "proposal_amount" if amt else "proposal", amount=amt, round=round_num)
 
 
@@ -261,10 +263,10 @@ def payment_request_text(case: dict, payment: dict) -> str:
     from app.core.i18n import case_language
     lang, plan = case_language(case), payment.get("plan") or []
     if len(plan) > 1:
-        text = _msg(case, "pay_plan", n=len(plan), amount=_amount(plan[0]["amount"]),
+        text = _msg(case, "pay_plan", n=len(plan), amount=_amount(plan[0]["amount"], case),
                     date=_date(plan[0]["due_at"], lang))
     else:
-        text = _msg(case, "pay_single", amount=_amount(payment["amount"]), date=_date(payment["due_at"], lang))
+        text = _msg(case, "pay_single", amount=_amount(payment["amount"], case), date=_date(payment["due_at"], lang))
     if not payment.get("link_url"):
         text += " " + _msg(case, "quote_ref", reference=payment.get("reference", ""))
     return text
@@ -275,9 +277,9 @@ def payment_reminder_text(case: dict, payment: dict, inst: dict) -> str:
     lang, plan = case_language(case), payment.get("plan") or []
     date = _date(inst["due_at"], lang)
     if len(plan) > 1:
-        text = _msg(case, "reminder_instalment", no=inst["no"], n=len(plan), amount=_amount(inst["amount"]), date=date)
+        text = _msg(case, "reminder_instalment", no=inst["no"], n=len(plan), amount=_amount(inst["amount"], case), date=date)
     else:
-        text = _msg(case, "reminder_single", amount=_amount(inst["amount"]), date=date)
+        text = _msg(case, "reminder_single", amount=_amount(inst["amount"], case), date=date)
     if not inst.get("link_url"):
         text += " " + _msg(case, "quote_ref", reference=payment.get("reference", ""))
     return text

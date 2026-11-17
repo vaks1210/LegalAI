@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.core.jurisdictions import money
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,7 @@ class EmailService:
         dispute_summary: str,
         portal_url: str | None = None,
         language: str | None = None,
+        currency: str = "INR",
     ) -> bool:
         from html import escape as _esc
         from app.core.i18n import LANGUAGES, t as _t
@@ -229,7 +231,7 @@ class EmailService:
                 f"?t={respondent_token(case_id, to_email)}"
             )
         amount_str = (
-            f"Rs. {claim_amount:,.0f}" if claim_amount else "Non-monetary dispute"
+            money(claim_amount, currency) if claim_amount else "Non-monetary dispute"
         )
         short_id = case_id[:8].upper()
         short_summary = (
@@ -311,6 +313,7 @@ class EmailService:
         proposed_amount: float,
         reasoning: str,
         portal_url: str,
+        currency: str = "INR",
     ) -> bool:
         short_id = case_id[:8].upper()
         short_reason = reasoning[:400] + "..." if len(reasoning) > 400 else reasoning
@@ -328,7 +331,7 @@ class EmailService:
                 <p style="color:#94A3B8;font-size:11px;margin:0 0 4px 0;
                            letter-spacing:2px;">PROPOSED SETTLEMENT</p>
                 <p style="color:#06B6D4;font-size:30px;font-weight:bold;margin:0;">
-                    Rs. {proposed_amount:,.0f}
+                    {money(proposed_amount, currency)}
                 </p>
             </div>
             <div style="background:#1E3A6E;border-radius:6px;padding:14px;margin:16px 0;">
@@ -363,6 +366,7 @@ class EmailService:
         case_id: str,
         settled_amount: float,
         download_url: str,
+        currency: str = "INR",
     ) -> bool:
         short_id = case_id[:8].upper()
         html = f"""
@@ -379,7 +383,7 @@ class EmailService:
                 <p style="color:#86EFAC;font-size:11px;margin:0 0 4px 0;
                            letter-spacing:2px;">AGREED SETTLEMENT</p>
                 <p style="color:#fff;font-size:30px;font-weight:bold;margin:0;">
-                    Rs. {settled_amount:,.0f}
+                    {money(settled_amount, currency)}
                 </p>
             </div>
             <p style="color:#E2E8F0;font-size:13px;">

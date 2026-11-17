@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 from app.services.openai_service import log_llm_fallback, openai_service
 from app.core.coerce import to_number
+from app.core.jurisdictions import localize_prompt
 from app.core.legal_reference import (
     get_consumer_forum_tier,
     get_rent_control_act,
@@ -549,7 +550,7 @@ INSTRUCTIONS:
 
     try:
         result = openai_service.call_json(
-            system_prompt=system_prompt,
+            system_prompt=localize_prompt(system_prompt, case),
             user_message=user_message,
             use_large_model=True,
             temperature=0.15,

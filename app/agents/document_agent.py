@@ -16,6 +16,7 @@ from reportlab.platypus import (
 from app.services.openai_service import log_llm_fallback, openai_service
 from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
+from app.core.jurisdictions import case_jurisdiction, localize_prompt, money
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ def _safe(text: str) -> str:
     elif not isinstance(text, str):
         text = str(text)
     replacements = {
-        "\u20b9": "Rs.", "\u20ac": "EUR", "\u00a3": "GBP",
+        "\u20b9": "Rs.", "\u20ac": "EUR ", "\u00a3": "GBP ",
         "\u2019": "'",   "\u2018": "'",   "\u201c": '"',   "\u201d": '"',
         "\u2013": "-",   "\u2014": "--",  "\u2026": "...", "\u00a0": " ",
         "\u2022": "-",   "\u2192": "->",  "\u2714": "YES", "\u2718": "NO",
@@ -363,7 +364,7 @@ def _append_case_record_sections(story: list, case: dict, intake: dict, legal: d
     ))
     story.append(_body_para(
         f"Track: {case.get('track', 'N/A')} | Claim: "
-        f"{('Rs. ' + format(case['claim_amount'], ',.0f')) if case.get('claim_amount') else 'Non-monetary'} | "
+        f"{money(case['claim_amount'], case) if case.get('claim_amount') else 'Non-monetary'} | "
         f"Incident Date: {case.get('incident_date') or 'Not specified'}"
     ))
     story.append(_section_heading("Dispute Narrative"))
@@ -451,7 +452,7 @@ async def _generate_demand_letter(
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute: {case['dispute_text'][:800]}
-Claim amount: Rs. {case.get('claim_amount', 'Not stated')}
+Claim amount: {money(case['claim_amount'], case) if case.get('claim_amount') else 'Not stated'}
 Incident date: {case.get('incident_date', 'Not specified')}
 Applicable laws: {[l.get('act') for l in legal.get('applicable_laws', [])[:4]]}
 Legal standing: {legal.get('legal_standing')}
@@ -461,7 +462,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
 
     try:
         content = openai_service.call_json(
-            system_prompt=DEMAND_LETTER_PROMPT,
+            system_prompt=localize_prompt(DEMAND_LETTER_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.3,
@@ -476,7 +477,8 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
         ][:3]
         forum = legal.get("forum_name") or "the competent court or forum"
         demand = (
-            f"I hereby call upon you to pay me Rs. {claim:,.0f} within 15 days of receipt of this notice."
+            f"I hereby call upon you to pay me {money(claim, case)} within "
+            f"{case_jurisdiction(case).notice_days} days of receipt of this notice."
             if claim else
             "I hereby call upon you to stop the conduct described above and take the steps necessary to "
             "remedy it within 15 days of receipt of this notice."
@@ -486,7 +488,7 @@ Claimant rights: {legal.get('claimant_rights', [])[:3]}
             "paragraph_1":  f"I, {case['claimant_name']}, issue this notice to you concerning the following: "
                             f"{case['dispute_text'][:600]}",
             "paragraph_2":  ("The conduct described gives rise to liability under "
-                             + ("; ".join(laws) if laws else "applicable Indian law") + "."),
+                             + ("; ".join(laws) if laws else f"the applicable law of {case_jurisdiction(case).name}") + "."),
             "paragraph_3":  demand,
             "paragraph_4":  f"If you fail to comply within that period, I will proceed before {forum} "
                             "without further notice, and will seek costs and interest as the court may allow.",
@@ -603,7 +605,7 @@ Case: {case['dispute_text'][:600]}
 Claimant: {case['claimant_name']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Track: {case.get('track')}
-Claim: Rs. {(case.get('claim_amount') or 0):,.0f}
+Claim: {money((case.get('claim_amount') or 0), case)}
 Legal standing: {legal.get('legal_standing')}
 Forum: {legal.get('forum_name')}
 Applicable laws: {[l.get('act') + ' S.' + str(l.get('section','')) for l in legal.get('applicable_laws',[])[:5]]}
@@ -614,7 +616,7 @@ Relief available: {legal.get('relief_available', [])}
 
     try:
         content = openai_service.call_json(
-            system_prompt=COURT_FILE_PROMPT,
+            system_prompt=localize_prompt(COURT_FILE_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.2,
@@ -629,7 +631,7 @@ Relief available: {legal.get('relief_available', [])}
             "witness_list":         [{"role": "Claimant", "relevance": "Primary witness"}],
             "pre_filing_actions":   ["Collect all evidence", "Send legal notice"],
             "filing_steps":         ["File plaint at appropriate court"],
-            "prayer_for_relief":    [f"Payment of Rs. {(case.get('claim_amount') or 0):,.0f}"],
+            "prayer_for_relief":    [f"Payment of {money((case.get('claim_amount') or 0), case)}"],
             "urgent_interim_relief": False,
             "interim_relief_grounds": None,
         }
@@ -675,7 +677,7 @@ Relief available: {legal.get('relief_available', [])}
         ["Win Probability", f"{analytics.get('win_probability', 'N/A')}%"],
         ["Legal Standing",  legal.get("legal_standing", "N/A")],
         ["Forum",           legal.get("forum_name", "N/A")],
-        ["Court Cost Est.", f"Rs. {(analytics.get('court_cost_estimate') or 0):,.0f}"],
+        ["Court Cost Est.", f"{money((analytics.get('court_cost_estimate') or 0), case)}"],
         ["Time Estimate",   f"{analytics.get('time_to_resolution_months', 'N/A')} months"],
     ]
     snap_tbl = Table(snap_data, colWidths=[60*mm, 110*mm])
@@ -878,10 +880,10 @@ def _payment_schedule_clause(case: dict) -> str | None:
     if not plan:
         return None
     if len(plan) == 1:
-        return (f"The Settlement Amount of Rs. {plan[0]['amount']:,.0f} shall be paid by "
+        return (f"The Settlement Amount of {money(plan[0]['amount'], case)} shall be paid by "
                 f"{_fmt_date(plan[0]['due_at'])} by bank transfer, UPI or the payment link provided "
                 "through the platform. Payment is complete when the funds are received by the Claimant.")
-    lines = "; ".join(f"instalment {i['no']}: Rs. {i['amount']:,.0f} by {_fmt_date(i['due_at'])}" for i in plan)
+    lines = "; ".join(f"instalment {i['no']}: {money(i['amount'], case)} by {_fmt_date(i['due_at'])}" for i in plan)
     return (f"The Settlement Amount shall be paid in {len(plan)} monthly instalments — {lines} — by bank "
             "transfer, UPI or the payment links provided through the platform. If any instalment remains "
             "unpaid for more than 7 days after its due date, the entire unpaid balance becomes immediately "
@@ -896,12 +898,14 @@ def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: lis
     """
     claimant, respondent = case["claimant_name"], case["respondent_name"]
     city = case.get("claimant_city") or case.get("claimant_state") or "the Claimant's place of residence"
+    state = case.get("claimant_state") or "the Claimant's state"
+    jur = case_jurisdiction(case)
     if actions:
         terms = ("The Respondent shall carry out the following within 14 days of this Agreement: "
                  + "; ".join(f"({i}) {a}" for i, a in enumerate(actions, 1)) + ".")
         payment = "No payment is due under this Agreement; the obligations are the actions set out in Clause 4."
     else:
-        terms = (f"The Respondent shall pay the Claimant Rs. {settled_amount:,.0f} "
+        terms = (f"The Respondent shall pay the Claimant {money(settled_amount, case)} "
                  f"(the \"Settlement Amount\") in full and final settlement of the dispute.")
         payment = ("The Settlement Amount shall be paid within 14 days of this Agreement by bank transfer "
                    "or UPI to an account nominated by the Claimant in writing. Payment is complete when "
@@ -928,14 +932,16 @@ def _fallback_settlement_clauses(case: dict, settled_amount: float, actions: lis
          "enforce it, and shall not make disparaging public statements about each other concerning the Dispute."),
         ("Electronic Acceptance",
          "Both parties accepted these terms electronically on the platform. Contracts formed through "
-         "electronic means are valid under Section 10A of the Information Technology Act, 2000."),
+         f"electronic means are valid under {jur.esign_law}."),
         ("Default",
          "If the Respondent fails to perform Clause 4 on time, the Claimant may enforce this Agreement, or "
          "pursue the original claim, before the competent court or forum, and may rely on this Agreement "
          "and the mediation record as evidence."),
         ("Governing Law and Jurisdiction",
-         f"This Agreement is governed by the laws of India. The courts at {city} have jurisdiction over any "
-         "dispute arising from it. This Agreement is the entire agreement between the parties on the Dispute."),
+         f"This Agreement is governed by {jur.governing_law.format(city=city, state=state)}. "
+         f"{jur.courts.format(city=city, state=state)[0].upper() + jur.courts.format(city=city, state=state)[1:]} "
+         "have jurisdiction over any dispute arising from it. This Agreement is the entire agreement between "
+         "the parties on the Dispute."),
     ]
     content = {}
     for i, (title, text) in enumerate(clauses, 1):
@@ -991,8 +997,8 @@ async def _generate_settlement_pdf(
 Claimant: {case['claimant_name']}, {case['claimant_city']}, {case['claimant_state']}
 Respondent: {case['respondent_name']}
 Dispute type: {intake.get('dispute_category', case.get('track'))}
-Original claim: Rs. {(case.get('claim_amount') or 0):,.0f}
-Agreed settlement: {"; ".join(actions) if actions else f"Rs. {settled_amount:,.0f}"}
+Original claim: {money((case.get('claim_amount') or 0), case)}
+Agreed settlement: {"; ".join(actions) if actions else f"{money(settled_amount, case)}"}
 Governing state: {case['claimant_state']}
 Settlement date: {agreed_on}
 Track: {track}
@@ -1001,7 +1007,7 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
 
     try:
         content = openai_service.call_json(
-            system_prompt=SETTLEMENT_PROMPT,
+            system_prompt=localize_prompt(SETTLEMENT_PROMPT, case),
             user_message=context,
             use_large_model=True,   # gpt-4o — legal drafting needs quality
             temperature=0.2,
@@ -1033,7 +1039,7 @@ Key issues resolved: {legal.get('key_legal_issues', [])}
     amount_data = [[
         Paragraph(
             ("AGREED SETTLEMENT: actions set out in Clause 4" if actions
-             else f"AGREED SETTLEMENT: Rs. {settled_amount:,.0f}"),
+             else f"AGREED SETTLEMENT: {money(settled_amount, case)}"),
             ParagraphStyle("SA", fontName="Helvetica-Bold", fontSize=14,
                            textColor=WHITE, alignment=TA_CENTER),
         )
@@ -1192,7 +1198,7 @@ Recommended authority: {intake.get('recommended_authority', 'local_police')}
 
     try:
         content = openai_service.call_json(
-            system_prompt=FIR_ADVISORY_PROMPT,
+            system_prompt=localize_prompt(FIR_ADVISORY_PROMPT, case),
             user_message=context,
             use_large_model=False,
             temperature=0.2,
@@ -1355,7 +1361,7 @@ def _generate_mediation_certificate(case: dict) -> bytes:
     details = [
         ["Case Reference",  case["id"][:8].upper()],
         ["Case Track",      (case.get("track") or "N/A").replace("_", " ").title()],
-        ["Claim Amount",    f"Rs. {(case.get('claim_amount') or 0):,.0f}" if case.get("claim_amount") else "Non-monetary"],
+        ["Claim Amount",    f"{money((case.get('claim_amount') or 0), case)}" if case.get("claim_amount") else "Non-monetary"],
         ["Claimant",        case["claimant_name"]],
         ["Respondent",      case["respondent_name"]],
         ["Date Initiated",  _fmt_date(case.get("created_at"))],
@@ -1425,22 +1431,22 @@ async def _generate_breach_notice_pdf(case: dict) -> bytes:
 
     story.append(_body_para(
         f"Under the terms of the executed Settlement Agreement, you agreed to pay "
-        f"a sum of Rs. {(case.get('settled_amount') or 0):,.0f} to "
+        f"a sum of {money((case.get('settled_amount') or 0), case)} to "
         f"{case['claimant_name']} (Claimant) within the stipulated payment period. "
         f"As of {_today()}, the said payment has not been received by the Claimant."
     ))
 
     story.append(_body_para(
         "Your failure to honor the executed Settlement Agreement constitutes a "
-        "breach of contract under the Indian Contract Act 1872 and provides the "
+        f"breach of contract under {case_jurisdiction(case).contract_law} and provides the "
         "Claimant with the right to seek enforcement through appropriate legal "
         "proceedings, including but not limited to filing a civil suit for recovery "
         "of the settled amount along with interest, costs, and damages."
     ))
 
     story.append(_body_para(
-        f"You are hereby called upon to make payment of Rs. "
-        f"{(case.get('settled_amount') or 0):,.0f} within 7 days of receipt of this "
+        f"You are hereby called upon to make payment of "
+        f"{money(case.get('settled_amount') or 0, case)} within 7 days of receipt of this "
         "notice. Failure to comply will leave the Claimant with no alternative but "
         "to initiate legal proceedings for enforcement of the Settlement Agreement, "
         "which will be submitted to the appropriate court as binding evidence of "

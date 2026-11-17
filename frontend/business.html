@@ -165,7 +165,7 @@
           <code>respondent_email</code>, <code>reference</code> (your invoice / loan / agreement number).
           Optional: <code>claim_amount</code>, <code>incident_date</code>, <code>due_date</code>,
           <code>respondent_phone</code> (invites and reminders also go by WhatsApp/SMS), <code>language</code>
-          (en, hi, bn, mr, ta, te, es, ar — the respondent's notices and portal), <code>respondent_type</code>, <code>details</code>,
+          (en, hi, bn, mr, ta, te, es, ar — the respondent's notices and portal), <code>jurisdiction</code> (IN, GB, SG, AE, US), <code>respondent_type</code>, <code>details</code>,
           <code>dispute_text</code> (overrides the template). Re-uploading the same reference is skipped.</p>
         <div class="row">
           <div><label>Template</label><select id="tplSelect"></select></div>
@@ -216,11 +216,17 @@
         <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:14px;">
           <input type="checkbox" id="sAutoInvite" style="width:auto;"> By default, invite respondents automatically after analysis
         </label>
+        <h3>Governing law</h3>
+        <p class="muted">Default jurisdiction for new cases: it sets the currency, the courts and laws cited, notice periods and agreement clauses. A bulk row can override it with a <code>jurisdiction</code> column.</p>
+        <div class="row"><div><label>Jurisdiction</label><select id="sJurisdiction">
+          <option value="IN">India (INR)</option><option value="GB">England &amp; Wales (GBP)</option>
+          <option value="SG">Singapore (SGD)</option><option value="AE">United Arab Emirates (AED)</option>
+          <option value="US">United States (USD)</option></select></div></div>
         <h3>Instalment plans</h3>
         <p class="muted">Let respondents choose to pay a settlement in monthly instalments within these limits. Missing an instalment by more than 7 days makes the full balance due.</p>
         <div class="row">
           <div><label>Maximum instalments (1 = no plans)</label><input id="sMaxInst" type="number" min="1" max="24"></div>
-          <div><label>Minimum per instalment (Rs.)</label><input id="sMinInst" type="number" min="0"></div>
+          <div><label>Minimum per instalment (case currency)</label><input id="sMinInst" type="number" min="0"></div>
         </div>
         <h3>WhatsApp &amp; SMS</h3>
         <p class="muted">Respondents with a phone number also get invites, deadline reminders, proposals and payment reminders on their phone. Email is always sent. Respondents can switch phone updates off.</p>
@@ -284,7 +290,15 @@ const STATUS = {
   ABANDONED:['Closed','bad'], CRIMINAL_ADVISORY:['Criminal advisory','bad'],
 };
 const badge = s => { const [l, c] = STATUS[s] || [s, '']; return `<span class="badge ${c}">${l}</span>`; };
-const rs = n => (n || n === 0) ? 'Rs. ' + Number(n).toLocaleString('en-IN') : '—';
+const JUR_CURRENCY = { IN: 'INR', GB: 'GBP', SG: 'SGD', AE: 'AED', US: 'USD' };
+const orgCurrency = () => JUR_CURRENCY[org?.settings?.jurisdiction || 'IN'] || 'INR';
+const rs = (n, cur) => {
+  if (!(n || n === 0)) return '—';
+  const code = cur || orgCurrency();
+  if (code === 'INR') return 'Rs. ' + Number(n).toLocaleString('en-IN');
+  try { return new Intl.NumberFormat('en', { style: 'currency', currency: code, maximumFractionDigits: 0 }).format(n); }
+  catch (_) { return code + ' ' + Number(n).toLocaleString(); }
+};
 const auth = () => ({ headers: { Authorization: `Bearer ${token}` } });
 const $ = id => document.getElementById(id);
 const msg = (id, text, kind='info') => { $(id).innerHTML = `<div class="alert ${kind}"></div>`; $(id).firstChild.textContent = text; };
@@ -385,7 +399,7 @@ async function loadCases() {
     <tr class="click" onclick="openCase('${c.id}')">
       <td class="mono">${c.reference || '—'}</td>
       <td>${c.respondent_name}<div class="muted">${c.respondent_email}</div></td>
-      <td>${rs(c.claim_amount)}</td><td>${badge(c.status)}</td><td>${rs(c.settled_amount)}</td>
+      <td>${rs(c.claim_amount, c.currency)}</td><td>${badge(c.status)}</td><td>${rs(c.settled_amount, c.currency)}</td>
       <td>${(c.created_at || '').slice(0, 10)}</td></tr>`).join('') ||
     '<tr><td colspan="6" class="muted">No cases match.</td></tr>';
   $('caseCount').textContent = `${r.total} case(s)`;
@@ -400,12 +414,12 @@ async function openCase(id) {
   $('caseDetail').classList.remove('hidden');
   $('caseDetail').innerHTML = `
     <div class="flex" style="justify-content:space-between;"><h2>${c.external_reference || c.id.slice(0,8)} — ${c.respondent_name}</h2>${badge(c.status)}</div>
-    <p class="muted">${c.respondent_email} · Claim ${rs(c.claim_amount)}${c.settled_amount ? ' · Settled ' + rs(c.settled_amount) : ''}</p>
+    <p class="muted">${c.respondent_email} · Claim ${rs(c.claim_amount, c.currency)}${c.settled_amount ? ' · Settled ' + rs(c.settled_amount, c.currency) : ''}</p>
     ${c.payment ? `<p style="margin-top:6px;">Payment: ${c.payment.status === 'paid'
-        ? `<span class="badge good">Paid ${rs(c.payment.amount)}</span> <span class="muted">${(c.payment.paid_at || '').slice(0,10)} · ${c.payment.confirmed_by}</span>`
+        ? `<span class="badge good">Paid ${rs(c.payment.amount, c.currency)}</span> <span class="muted">${(c.payment.paid_at || '').slice(0,10)} · ${c.payment.confirmed_by}</span>`
         : c.payment.status === 'defaulted'
-        ? `<span class="badge bad">Defaulted — ${rs(c.payment.balance_due)} due</span>`
-        : `<span class="badge wait">${(c.payment.plan || []).length > 1 ? `Paid ${rs(c.payment.paid_amount)} of ${rs(c.payment.amount)} · next ${rs(c.payment.next_amount)}` : 'Due ' + rs(c.payment.amount)} by ${(c.payment.due_at || '').slice(0,10)}</span>
+        ? `<span class="badge bad">Defaulted — ${rs(c.payment.balance_due, c.currency)} due</span>`
+        : `<span class="badge wait">${(c.payment.plan || []).length > 1 ? `Paid ${rs(c.payment.paid_amount, c.currency)} of ${rs(c.payment.amount, c.currency)} · next ${rs(c.payment.next_amount, c.currency)}` : 'Due ' + rs(c.payment.amount, c.currency)} by ${(c.payment.due_at || '').slice(0,10)}</span>
            ${c.payment.link_url ? `<a href="${c.payment.link_url}" target="_blank" rel="noopener">payment link</a>` : ''}`}</p>` : ''}
     <h3>Dispute</h3><p style="font-size:14px;line-height:1.6;">${c.dispute_text}</p>
     <h3>Analysis</h3><p style="font-size:14px;">${(c.intake_data || {}).dispute_type || '—'} · Legal standing
@@ -487,6 +501,7 @@ function renderSettings() {
   $('sMediator').checked = !!org.settings?.require_mediator_review;
   $('sMaxInst').value = org.settings?.installments?.max || 1;
   $('sMinInst').value = org.settings?.installments?.min_amount || 0;
+  $('sJurisdiction').value = org.settings?.jurisdiction || 'IN';
   $('sWhatsApp').checked = org.settings?.channels?.whatsapp !== false;
   $('sSms').checked = org.settings?.channels?.sms !== false;
 }
@@ -496,6 +511,7 @@ async function saveSettings() {
       auto_invite: $('sAutoInvite').checked, require_mediator_review: $('sMediator').checked,
       installments: { max: Number($('sMaxInst').value || 1), min_amount: Number($('sMinInst').value || 0) },
       channels: { whatsapp: $('sWhatsApp').checked, sms: $('sSms').checked },
+      jurisdiction: $('sJurisdiction').value,
       payee: { upi_id: $('pUpi').value.trim(), account_name: $('pName').value.trim(),
                account_number: $('pAcct').value.trim(), ifsc: $('pIfsc').value.trim().toUpperCase(),
                bank: $('pBank').value.trim() } }, auth())).data;
