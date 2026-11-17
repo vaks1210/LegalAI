@@ -40,6 +40,9 @@ def transition(case: dict, new_status: CaseStatus) -> dict:
     now = datetime.now(timezone.utc)
     case["status"] = new_status.value
     case["updated_at"] = now.isoformat()
+    history = case.setdefault("status_history", [])
+    history.append({"status": new_status.value, "at": now.isoformat()})
+    del history[:-60]
 
     deadline_hours = STAGE_DEADLINES.get(new_status)
     case["current_deadline"] = (

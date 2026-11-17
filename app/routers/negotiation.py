@@ -23,6 +23,7 @@ from app.models.negotiation import (
 from app.services.blob_service import blob_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.services import messaging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -280,6 +281,8 @@ async def _handle_offer_submission(
                     to_email=to_email, party_name=party_name, case_id=case["id"],
                     round_num=round_number, proposed_amount=amount, reasoning=reason, portal_url=portal,
                 )
+            messaging.messaging_service.notify_respondent(
+                case, "proposal", messaging.proposal_text(case, round_number, amount))
             return {
                 "message":      "The offers already overlap. Both parties are asked to confirm the settlement.",
                 "status":       CaseStatus.SETTLEMENT_PENDING_CONFIRMATION.value,
@@ -477,6 +480,8 @@ def issue_proposal(case_id: str, round_number: int, amount, actions, reasoning,
             to_email=to_email, party_name=party_name, case_id=case_id, round_num=round_number,
             proposed_amount=amount or 0, reasoning=reasoning or "", portal_url=portal,
         )
+    messaging.messaging_service.notify_respondent(
+        case, "proposal", messaging.proposal_text(case, round_number, amount))
     logger.info(f"Proposal issued | case_id={case_id} | round={round_number} | amount={amount}")
 
 
@@ -815,6 +820,15 @@ def _request_payment(case_id: str) -> None:
                      "full balance due."),
             portal_url=link, action_label=label,
         )
+        first = plan[0] if plan else {}
+        messaging.messaging_service.notify_respondent(
+            case, "payment_request",
+            (f"Settlement reached in case {case_id[:8].upper()}. Pay Rs. {payment['amount']:,.0f} by {due}."
+             if len(plan) <= 1 else
+             f"Settlement reached in case {case_id[:8].upper()}: {len(plan)} instalments, first "
+             f"Rs. {first.get('amount', 0):,.0f} due {due}.") +
+            ("" if payment.get("link_url") else f" Quote reference {payment['reference']}."),
+            link=payment.get("link_url"))
     except Exception:
         logger.exception(f"Payment request failed | case_id={case_id}")
 
@@ -912,6 +926,8 @@ async def _start_next_round(case_id: str, next_round_number: int):
                 round_num=next_round_number,
                 portal_url=portal,
             )
+        messaging.messaging_service.notify_respondent(
+            case, "next_round", messaging.next_round_text(case, next_round_number))
 
         logger.info(f"Next round started | case_id={case_id} | round={next_round_number}")
 

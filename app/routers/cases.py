@@ -19,6 +19,7 @@ from app.services.blob_service import blob_service, refresh_case_urls
 from app.services.content_safety import content_safety_service
 from app.services.cosmos_service import cosmos_service
 from app.services.email_service import email_service
+from app.services import messaging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ def deliver_invite(case: dict) -> bool:
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
     )
+    messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
     if not sent:
         return False
     cosmos_service.transition_case(case["id"], CaseStatus.INVITE_SENT)
@@ -307,7 +309,8 @@ async def send_invite(case_id: str, current_user: dict = Depends(get_current_use
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
     )
-    if not sent:
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
 
     # Notify claimant that invite was dispatched
@@ -360,7 +363,8 @@ async def resend_invite(case_id: str, current_user: dict = Depends(get_current_u
         claim_amount=case.get("claim_amount"),
         dispute_summary=case["dispute_text"],
     )
-    if not sent:
+    phone = messaging.messaging_service.notify_respondent(case, "invite", messaging.invite_text(case))
+    if not sent and not (phone and phone.get("ok")):
         raise HTTPException(status_code=503, detail="Failed to send invite email. Please try again.")
     logger.info(f"Invite resent | case_id={case_id}")
     return {"message": f"Invite link resent to {case['respondent_email']}"}

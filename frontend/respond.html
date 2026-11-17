@@ -334,6 +334,12 @@ function renderCase() {
         ${ds.key_issues.map(i => `<div style="font-size:13px;padding:3px 0;color:var(--dark);">• ${i}</div>`).join('')}
       </div>
     ` : ''}
+    ${caseData.phone_updates?.has_phone ? `
+      <label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--dark);text-transform:none;font-weight:400;letter-spacing:normal;">
+        <input type="checkbox" id="phoneUpdates" style="width:auto;" ${caseData.phone_updates.enabled ? 'checked' : ''}
+               onchange="setPhoneUpdates(this.checked)">
+        Send me updates on WhatsApp/SMS (${caseData.phone_updates.number})
+      </label>` : ''}
   `;
 
   // Legal context
@@ -766,6 +772,18 @@ async function submitDecision(decision) {
     await refreshRespondentCase();
   } catch(e) {
     alert(e.response?.data?.detail || 'Failed to submit decision.');
+  }
+}
+
+async function setPhoneUpdates(on) {
+  try {
+    await axios.post(`${API}/api/respondent/contact-preferences`, {
+      case_id: caseId, email: respondentEmail, token: respondentToken, phone_updates: on
+    });
+    caseData.phone_updates.enabled = on;
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Could not update your preference.');
+    document.getElementById('phoneUpdates').checked = !on;
   }
 }
 

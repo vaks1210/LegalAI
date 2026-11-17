@@ -27,6 +27,11 @@ os.environ.update({
     "SENDGRID_API_KEY": "",
     "SENDGRID_FROM_EMAIL": "",
     "APPINSIGHTS_INSTRUMENTATION_KEY": "",
+    "WHATSAPP_TOKEN": "",
+    "WHATSAPP_PHONE_NUMBER_ID": "",
+    "TWILIO_ACCOUNT_SID": "",
+    "TWILIO_AUTH_TOKEN": "",
+    "TWILIO_FROM_NUMBER": "",
 })
 
 import pytest  # noqa: E402

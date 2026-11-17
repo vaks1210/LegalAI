@@ -33,6 +33,13 @@ class RespondentVerify(BaseModel):
     token:          str = ""  # signed token from the emailed portal link (required)
 
 
+class RespondentContactPrefs(BaseModel):
+    case_id:        str
+    email:          str = ""
+    token:          str = ""
+    phone_updates:  bool
+
+
 class RespondentDecision(BaseModel):
     installments:   int | None = None
     case_id:        str
@@ -128,8 +135,15 @@ async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
     )
 
     from app.services.payments import installment_policy
+    from app.services.messaging import mask_phone, normalize_phone
+    phone = normalize_phone(case.get("respondent_phone"))
     return {
         "payment_options": installment_policy(case),
+        "phone_updates": {
+            "has_phone": bool(phone),
+            "number":    mask_phone(phone),
+            "enabled":   bool(phone) and not case.get("respondent_channel_opt_out"),
+        },
         "case":   respondent_view,
         "status": case["status"],
         "track":  case.get("track"),
@@ -166,6 +180,21 @@ async def get_respondent_case(case_id: str, email: str = "", t: str = ""):
             "shared_notes":   neg.get("shared_notes", []) if neg else [],
         } if neg is not None or round_number == 0 else None,
     }
+
+
+@router.post("/contact-preferences")
+async def contact_preferences(body: RespondentContactPrefs):
+    """Respondent turns WhatsApp/SMS updates on or off (email always continues)."""
+    case = _verify_respondent(body.case_id, body.email, body.token)
+
+    def apply(c):
+        c["respondent_channel_opt_out"] = not body.phone_updates
+        c.setdefault("consent_log", []).append({
+            "at": datetime.now(timezone.utc).isoformat(), "party": "respondent",
+            "event": "phone_updates_on" if body.phone_updates else "phone_updates_off",
+        })
+    cosmos_service._mutate_case(case["id"], apply)
+    return {"phone_updates": body.phone_updates}
 
 
 # ─────────────────────────────────────────────────────────────

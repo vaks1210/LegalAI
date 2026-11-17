@@ -164,6 +164,11 @@ class InstalmentPolicy(BaseModel):
     min_amount: float = Field(default=0, ge=0)
 
 
+class ChannelPrefs(BaseModel):
+    whatsapp: bool = True
+    sms:      bool = True
+
+
 class OrgUpdate(BaseModel):
     name:          str | None = Field(default=None, min_length=2, max_length=120)
     contact_email: str | None = None
@@ -171,6 +176,7 @@ class OrgUpdate(BaseModel):
     auto_invite:   bool | None = None
     require_mediator_review: bool | None = None
     installments:  InstalmentPolicy | None = None
+    channels:      ChannelPrefs | None = None
     payee:         Payee | None = None
 
 
@@ -189,6 +195,8 @@ async def update_org(body: OrgUpdate, actor: OrgActor = Depends(org_actor)):
             org.setdefault("settings", {})["auto_invite"] = body.auto_invite
         if body.installments is not None:
             org.setdefault("settings", {})["installments"] = body.installments.model_dump()
+        if body.channels is not None:
+            org.setdefault("settings", {})["channels"] = body.channels.model_dump()
         if body.require_mediator_review is not None:
             org.setdefault("settings", {})["require_mediator_review"] = body.require_mediator_review
         if body.payee is not None:

@@ -221,6 +221,14 @@
           <div><label>Maximum instalments (1 = no plans)</label><input id="sMaxInst" type="number" min="1" max="24"></div>
           <div><label>Minimum per instalment (Rs.)</label><input id="sMinInst" type="number" min="0"></div>
         </div>
+        <h3>WhatsApp &amp; SMS</h3>
+        <p class="muted">Respondents with a phone number also get invites, deadline reminders, proposals and payment reminders on their phone. Email is always sent. Respondents can switch phone updates off.</p>
+        <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;">
+          <input type="checkbox" id="sWhatsApp" style="width:auto;"> WhatsApp
+        </label>
+        <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <input type="checkbox" id="sSms" style="width:auto;"> SMS (fallback when WhatsApp fails)
+        </label>
         <label style="text-transform:none;font-weight:400;display:flex;gap:8px;align-items:center;margin-top:8px;">
           <input type="checkbox" id="sMediator" style="width:auto;"> Require a human mediator to approve every AI settlement proposal
         </label>
@@ -401,6 +409,11 @@ async function openCase(id) {
     <h3>Dispute</h3><p style="font-size:14px;line-height:1.6;">${c.dispute_text}</p>
     <h3>Analysis</h3><p style="font-size:14px;">${(c.intake_data || {}).dispute_type || '—'} · Legal standing
       <b>${(c.legal_data || {}).legal_standing || '—'}</b> · Forum ${(c.legal_data || {}).forum_name || '—'}</p>
+    ${(c.channel_log || []).length ? `<h3>Phone notices</h3><div class="scroll"><table><thead><tr><th>When</th><th>Notice</th><th>Channel</th><th>To</th><th>Result</th></tr></thead><tbody>
+      ${c.channel_log.slice().reverse().map(e => `<tr><td>${(e.at || '').slice(0,16).replace('T',' ')}</td><td>${e.kind}</td>
+        <td>${e.channel}</td><td class="mono">${e.to}</td><td>${e.ok ? '<span class="badge good">Sent</span>' : `<span class="badge bad">Failed</span> <span class="muted">${e.error || ''}</span>`}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+    ${c.respondent_channel_opt_out ? '<p class="muted">Respondent switched off WhatsApp/SMS updates.</p>' : ''}
     <div class="flex" style="margin-top:14px;">${links}
       ${c.status === 'ANALYZED' ? `<button class="btn" onclick="inviteCase('${c.id}')">Send invite</button>` : ''}
       <a class="btn secondary" href="/" title="Negotiate in the case workspace">Open in case workspace</a></div>
@@ -473,12 +486,15 @@ function renderSettings() {
   $('sMediator').checked = !!org.settings?.require_mediator_review;
   $('sMaxInst').value = org.settings?.installments?.max || 1;
   $('sMinInst').value = org.settings?.installments?.min_amount || 0;
+  $('sWhatsApp').checked = org.settings?.channels?.whatsapp !== false;
+  $('sSms').checked = org.settings?.channels?.sms !== false;
 }
 async function saveSettings() {
   try {
     org = (await axios.patch(`${API}/api/orgs/${org.id}`, {
       auto_invite: $('sAutoInvite').checked, require_mediator_review: $('sMediator').checked,
       installments: { max: Number($('sMaxInst').value || 1), min_amount: Number($('sMinInst').value || 0) },
+      channels: { whatsapp: $('sWhatsApp').checked, sms: $('sSms').checked },
       payee: { upi_id: $('pUpi').value.trim(), account_name: $('pName').value.trim(),
                account_number: $('pAcct').value.trim(), ifsc: $('pIfsc').value.trim().toUpperCase(),
                bank: $('pBank').value.trim() } }, auth())).data;

@@ -131,6 +131,10 @@ def build_case_data(org: dict, row: dict, default_template: str | None) -> dict:
         raise ValueError(f"Invalid respondent_email '{row['respondent_email']}'")
     if email == (org.get("contact_email") or "").lower():
         raise ValueError("Respondent email is the organisation's own contact email")
+    if row.get("respondent_phone"):
+        from app.services.messaging import normalize_phone
+        if not normalize_phone(str(row["respondent_phone"])):
+            raise ValueError(f"Invalid respondent_phone '{row['respondent_phone']}'")
 
     amount = _amount(row.get("claim_amount") or row.get("amount"))
     if amount is not None and amount <= 0:

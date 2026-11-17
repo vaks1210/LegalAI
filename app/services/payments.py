@@ -234,6 +234,13 @@ def check_payment_schedules(now: datetime | None = None) -> dict:
                         f"Missing a payment by more than {GRACE_DAYS} days makes the full balance due.",
                 portal_url=nxt.get("link_url") or None, action_label="Pay now" if nxt.get("link_url") else None,
             )
+            from app.services.messaging import messaging_service
+            messaging_service.notify_respondent(
+                case, "payment_reminder",
+                f"Reminder: {label} of Rs. {nxt['amount']:,.0f} for case {case['id'][:8].upper()} is due "
+                f"{due.strftime('%d %b %Y')}. " + ("" if nxt.get("link_url") else
+                                                   f"Quote reference {payment.get('reference')}."),
+                link=nxt.get("link_url"))
             no = nxt["no"]
 
             def mark_reminded(c, no=no):

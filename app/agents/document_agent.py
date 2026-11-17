@@ -781,10 +781,45 @@ Relief available: {legal.get('relief_available', [])}
                 f"[{law.get('strength','SUPPORTING')}]: {_short(law.get('relevance'))}"
             ))
 
+    service = _service_of_notice(case)
+    if service:
+        story.append(_section_heading("Service of Notice on the Respondent", RED))
+        for line in service:
+            story.append(_bullet(line))
+
     _append_case_record_sections(story, case, intake, legal, analytics)
     story.extend(_disclaimer_footer())
     doc.build(story)
     return buf.getvalue()
+
+
+NOTICE_KINDS = {
+    "invite": "Dispute notice and portal link", "nudge": "Deadline reminder",
+    "proposal": "Settlement proposal", "next_round": "Next negotiation round",
+    "payment_request": "Payment request", "payment_reminder": "Payment reminder",
+}
+
+
+def _service_of_notice(case: dict) -> list[str]:
+    """Dated record of how the respondent was notified (for non-response claims)."""
+    events = []
+    for h in case.get("status_history") or []:
+        if h.get("status") == "INVITE_SENT":
+            events.append((h["at"], f"Dispute notice emailed to {case.get('respondent_email')} "
+                                    "with a personal link to the online resolution portal."))
+        elif h.get("status") == "RESPONDENT_VIEWED":
+            events.append((h["at"], "Respondent opened the case on the portal."))
+    for e in case.get("channel_log") or []:
+        if e.get("ok"):
+            events.append((e["at"], f"{NOTICE_KINDS.get(e.get('kind'), e.get('kind', 'Notice'))} sent by "
+                                    f"{'WhatsApp' if e.get('channel') == 'whatsapp' else 'SMS'} to {e.get('to')}"
+                                    + (f" (message id {e['id']})" if e.get("id") else "") + "."))
+    if not events:
+        return []
+    lines = [f"{_fmt_date(at)}: {text}" for at, text in sorted(events, key=lambda ev: ev[0])]
+    if case.get("auto_escalation_reason"):
+        lines.append(f"Outcome: {case['auto_escalation_reason']}")
+    return lines
 
 
 # ══════════════════════════════════════════════════════════════
