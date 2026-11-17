@@ -526,6 +526,7 @@ Signed-in users can exercise their data-principal rights from the **Account** me
 **Download my data** (`GET /api/auth/me/export`) returns a JSON file with the user's profile and:
 - cases they filed, as the claimant sees them (including their own AI analysis);
 - cases where they are the respondent, **only in the respondent view**. The claimant's private analysis, phone and email are never included.
+- their organisation memberships (organisation, role, when added).
 
 **Delete my account** (`DELETE /api/auth/me`, confirmed by typing the account email) applies this retention policy, approved by the product owner:
 
@@ -535,6 +536,8 @@ Signed-in users can exercise their data-principal rights from the **Account** me
 | Cases filed by the user that never reached the respondent (`SUBMITTED`, `ANALYZING`, `ANALYZED`, `ABANDONED`, `CRIMINAL_ADVISORY`) | Deleted, with the negotiation, document records, email logs, uploaded evidence and generated PDFs |
 | Cases filed by the user that reached the respondent (invite sent or later) | **Kept**, because they are also the other party's record and may be needed in legal proceedings. The claimant's phone is removed and their name becomes `[erased]`. Their email (which the other party already holds) and city/state (which decide the forum) remain. Documents already generated keep their original contents. |
 | Cases where the user is the respondent | Not changed (they belong to the claimant) |
+| Cases filed by an organisation (bulk filing / API), even when its contact email is the user's | Not changed and not exported as the user's own (they belong to the organisation) |
+| Organisation memberships | The user is removed from every organisation. Deletion is refused (409) while they are an organisation's **only owner**, so they must add another owner first |
 
 The same notice is shown in the deletion dialog and returned by `GET /api/auth/disclaimers` (`data_retention`), and the consent text tells users about it when they agree. The policy is implemented in `app/services/account_service.py`.
 

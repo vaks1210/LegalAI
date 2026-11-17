@@ -204,3 +204,73 @@ def test_disclaimers_include_retention_notice(client):
     data = client.get("/api/auth/disclaimers").json()
     assert "[erased]" in data["data_retention"]
     assert "delete" in data["dpdp_consent"]
+
+
+# ── Organisations ─────────────────────────────────────────────
+
+def _org_owned_by(client, owner_headers, owner_email, n):
+    r = client.post("/api/orgs", headers=owner_headers, json={
+        "name": f"Rights Org {n}", "contact_email": owner_email, "accept_terms": True,
+        "profile": {"legal_name": f"Rights Org Pvt Ltd {n}", "city": "Pune", "state": "Maharashtra",
+                    "phone": "02012345678"},
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _bulk_file(client, headers, org_id, n):
+    r = client.post(f"/api/orgs/{org_id}/cases/bulk", headers=headers, json={"template": "unpaid_rent", "rows": [{
+        "respondent_name": "Tenant", "respondent_email": f"tenant{n}@rights.test", "reference": f"R-{n}",
+        "claim_amount": 25000, "due_date": "2026-09-30", "incident_date": "2026-04-01",
+    }]})
+    assert r.status_code == 200, r.text
+    return r.json()["created"][0]["case_id"]
+
+
+def test_sole_org_owner_cannot_delete_until_another_owner_exists(client, login):
+    me, other = _emails()
+    n = next(_counter)
+    headers = login(me)
+    personal = _submit(client, headers, me, other)
+    org = _org_owned_by(client, headers, me, n)
+
+    r = _delete(client, headers, me)
+    assert r.status_code == 409
+    assert org["name"] in r.json()["detail"]
+    # Refused before anything changed.
+    assert cosmos_service.get_case(personal) is not None
+    assert client.get("/api/auth/me", headers=headers).status_code == 200
+
+    login(other)
+    assert client.post(f"/api/orgs/{org['id']}/members", headers=headers,
+                       json={"email": other, "role": "owner"}).status_code == 200
+    assert _delete(client, headers, me).status_code == 200
+    members = [m["email"] for m in cosmos_service.get_org(org["id"])["members"]]
+    assert members == [other]
+
+
+def test_org_cases_are_not_exported_or_erased_as_personal(client, login):
+    me, other = _emails()
+    n = next(_counter)
+    headers = login(me)
+    org = _org_owned_by(client, headers, me, n)  # contact email == my login email
+    org_case = _bulk_file(client, headers, org["id"], n)
+    assert cosmos_service.get_case(org_case)["claimant_email"] == me
+    personal = _submit(client, headers, me, other)
+
+    data = client.get("/api/auth/me/export", headers=headers).json()
+    assert [c["id"] for c in data["cases_as_claimant"]] == [personal]
+    [membership] = data["organisation_memberships"]
+    assert (membership["org_id"], membership["role"], membership["email"]) == (org["id"], "owner", me)
+
+    other_headers = login(other)
+    client.post(f"/api/orgs/{org['id']}/members", headers=headers, json={"email": other, "role": "owner"})
+    r = _delete(client, headers, me)
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted_cases"] == 1
+
+    kept = cosmos_service.get_case(org_case)
+    assert kept is not None
+    assert kept["claimant_name"] == org["profile"]["legal_name"]
+    assert "claimant_erased_at" not in kept
+    assert client.get(f"/api/orgs/{org['id']}/cases/{org_case}", headers=other_headers).status_code == 200

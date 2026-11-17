@@ -21,7 +21,9 @@ DATA_RETENTION_NOTICE = (
     "they are also that party's record and may be needed in legal proceedings: your "
     "phone number is removed and your name is replaced with [erased]; your email "
     "address and city/state remain on those cases. Cases where you are the respondent "
-    "belong to the claimant and are not changed."
+    "belong to the claimant and are not changed. Cases filed by an organisation belong "
+    "to that organisation and are not changed; you are removed from its members, and "
+    "you must add another owner first if you are its only owner."
 )
 
 AI_DISCLAIMER_TEXT = (

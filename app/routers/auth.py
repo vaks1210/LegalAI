@@ -223,7 +223,13 @@ async def delete_my_account(
             status_code=400,
             detail="Type your account email exactly to confirm deletion.",
         )
-    summary = account_service.erase_user(current_user)
+    try:
+        summary = account_service.erase_user(current_user)
+    except account_service.SoleOwnerError as e:
+        raise HTTPException(status_code=409, detail=(
+            f"You are the only owner of: {', '.join(e.org_names)}. Add another owner "
+            "in the business console (or remove the organisation) before deleting your account."
+        ))
     return {
         "message": "Your account has been deleted.",
         "deleted_cases": len(summary["deleted_case_ids"]),
